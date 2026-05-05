@@ -1,5 +1,5 @@
-.PHONY: build run test lint clean tidy help up down nuke ps logs
-
+.PHONY: build run test lint clean tidy help up down nuke ps logs \
+        migrate-up migrate-down migrate-status migrate-create migrate-force
 # Default goal — runs when you just type `make`.
 .DEFAULT_GOAL := help
 
@@ -38,3 +38,26 @@ ps: ## Show running containers.
 
 logs: ## Tail container logs (Ctrl-C to exit).
 	docker compose logs -f
+
+# === Migrations ===
+# Note: requires PORTCULLIS_DATABASE_URL in environment.
+# `make up` first to ensure the database is running.
+
+MIGRATE = migrate -path migrations -database "$$PORTCULLIS_DATABASE_URL"
+
+migrate-up: ## Apply all pending migrations.
+	@source .env && $(MIGRATE) up
+
+migrate-down: ## Roll back the most recent migration.
+	@source .env && $(MIGRATE) down 1
+
+migrate-status: ## Show current migration version.
+	@source .env && $(MIGRATE) version
+
+migrate-create: ## Create a new migration. Usage: make migrate-create name=add_users
+	@if [ -z "$(name)" ]; then echo "Usage: make migrate-create name=<snake_case_name>"; exit 1; fi
+	migrate create -ext sql -dir migrations -seq -digits 4 $(name)
+
+migrate-force: ## Force schema_migrations to a version. Usage: make migrate-force v=2
+	@if [ -z "$(v)" ]; then echo "Usage: make migrate-force v=<integer>"; exit 1; fi
+	@source .env && $(MIGRATE) force $(v)

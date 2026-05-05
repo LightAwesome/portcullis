@@ -1,0 +1,54 @@
+name: portcullis
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    container_name: portcullis-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portcullis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: portcullis
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portcullis -d portcullis"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - portcullis-net
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: portcullis-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - portcullis-net
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  portcullis-net:
+    driver: bridge

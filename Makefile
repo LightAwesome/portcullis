@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean tidy help
+.PHONY: build run test lint clean tidy help up down nuke ps logs
 
 # Default goal — runs when you just type `make`.
 .DEFAULT_GOAL := help
@@ -24,3 +24,17 @@ tidy: ## Tidy go.mod and go.sum.
 
 clean: ## Remove built binaries.
 	rm -rf bin/
+up: ## Bring up dev infrastructure (postgres, redis).
+	docker compose up -d
+
+down: ## Stop dev infrastructure (preserves data).
+	docker compose down
+
+nuke: ## Stop dev infrastructure AND DELETE ALL DATA.
+	docker compose down -v
+
+ps: ## Show running containers.
+	docker compose ps
+
+logs: ## Tail container logs (Ctrl-C to exit).
+	docker compose logs -f

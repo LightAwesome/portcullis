@@ -10,24 +10,22 @@ import (
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/LightAwesome/portcullis/internal/store"
 )
 
-// newTestStore spins up a fresh Postgres container, applies migrations,
-// and returns a connected Store. The container is torn down at test end.
+// newTestStore spins up fresh Postgres and Redis containers, applies migrations,
+// and returns a connected Store. Containers are torn down at test end.
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
-
 	ctx := context.Background()
 
-	// Locate migrations relative to this test file. runtime.Caller is the
-	// idiomatic way to find paths relative to the source file at test time.
 	_, thisFile, _, _ := runtime.Caller(0)
 	migrationsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
 
-	container, err := postgres.Run(ctx,
+	pgContainer, err := postgres.Run(ctx,
 		"postgres:16.4-alpine",
 		postgres.WithDatabase("portcullis_test"),
 		postgres.WithUsername("test"),
@@ -41,20 +39,34 @@ func newTestStore(t *testing.T) *store.Store {
 		),
 	)
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		t.Fatalf("start postgres: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("terminate container: %v", err)
+		if err := pgContainer.Terminate(ctx); err != nil {
+			t.Logf("terminate postgres: %v", err)
 		}
 	})
 
-	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
+	rdContainer, err := redis.Run(ctx, "redis:7.4-alpine")
 	if err != nil {
-		t.Fatalf("get connection string: %v", err)
+		t.Fatalf("start redis: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := rdContainer.Terminate(ctx); err != nil {
+			t.Logf("terminate redis: %v", err)
+		}
+	})
+
+	pgURL, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("postgres conn string: %v", err)
+	}
+	rdURL, err := rdContainer.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("redis conn string: %v", err)
 	}
 
-	db, err := store.New(ctx, connStr)
+	db, err := store.New(ctx, pgURL, rdURL)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -132,5 +144,47 @@ func TestCreateAndGetRoute(t *testing.T) {
 	}
 	if fetched.TargetBaseURL != "https://api.openai.com/v1" {
 		t.Errorf("target: got %q, want %q", fetched.TargetBaseURL, "https://api.openai.com/v1")
+	}
+}
+
+func TestCacheRoundTrip(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+
+	if err := db.CacheSet(ctx, "k", []byte("v"), time.Minute); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, err := db.CacheGet(ctx, "k")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(got) != "v" {
+		t.Errorf("value: got %q, want %q", got, "v")
+	}
+}
+
+func TestCacheGet_Miss(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := db.CacheGet(ctx, "nope")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestCacheDel(t *testing.T) {
+	db := newTestStore(t)
+	ctx := context.Background()
+
+	if err := db.CacheSet(ctx, "k", []byte("v"), time.Minute); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := db.CacheDel(ctx, "k"); err != nil {
+		t.Fatalf("del: %v", err)
+	}
+	_, err := db.CacheGet(ctx, "k")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after del, got %v", err)
 	}
 }

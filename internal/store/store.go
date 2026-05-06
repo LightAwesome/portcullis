@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -27,10 +28,36 @@ var (
 )
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	redis *redis.Client
 }
 
-func New(ctx context.Context, databaseURL string) (*Store, error) {
+func New(ctx context.Context, databaseURL string, redisURL string) (*Store, error) {
+
+	pool, err := newPool(ctx, databaseURL)
+
+	if err != nil {
+		return nil, fmt.Errorf("postgres error: %w", err)
+	}
+	rdb, err := newRedis(ctx, redisURL)
+
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("redis error: %w", err)
+	}
+
+	return &Store{pool: pool, redis: rdb}, nil
+}
+
+func (s *Store) Close() {
+	s.pool.Close()
+}
+
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
+func newPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 
 	if err != nil {
@@ -49,13 +76,24 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	return &Store{pool: pool}, nil
+	return pool, nil
 }
 
-func (s *Store) Close() {
-	s.pool.Close()
-}
+func newRedis(ctx context.Context, redisURL string) (*redis.Client, error) {
 
-func (s *Store) Ping(ctx context.Context) error {
-	return s.pool.Ping(ctx)
+	opts, err := redis.ParseURL(redisURL)
+
+	if err != nil {
+		return nil, fmt.Errorf("parse redis url: %w", err)
+	}
+
+	rdb := redis.NewClient(opts)
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		_ = rdb.Close()
+		return nil, fmt.Errorf("ping redis cache: %w", err)
+	}
+
+	return rdb, nil
+
 }

@@ -1,5 +1,6 @@
-.PHONY: build run test lint clean tidy help up down nuke ps logs \
+.PHONY: build run test lint clean tidy help up down nuke ps logs dev \
         migrate-up migrate-down migrate-status migrate-create migrate-force
+# O
 # Default goal — runs when you just type `make`.
 .DEFAULT_GOAL := help
 
@@ -26,7 +27,9 @@ clean: ## Remove built binaries.
 	rm -rf bin/
 up: ## Bring up dev infrastructure (postgres, redis).
 	docker compose up -d
-
+dev: ## Bring up infra and run the gateway in the foreground.
+	@docker compose up -d
+	@$(MAKE) run
 down: ## Stop dev infrastructure (preserves data).
 	docker compose down
 

@@ -3,6 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -52,14 +55,62 @@ func runServer(ctx context.Context) error {
 	// TODO: start the HTTP server, wait for ctx.Done().
 
 	handler := server.NewServer(deps)
+	//TODO: actually listen to and serve requests
 
-	fmt.Printf("portcullis: the gate is being raised (%s)\n", cfg.Env)
-	fmt.Printf("  addr:      %s\n", cfg.Addr)
-	fmt.Printf("  log_level: %s\n", cfg.LogLevel)
+	srv := &http.Server{
+		Addr:    cfg.Addr,
+		Handler: handler,
 
-	_ = handler
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// ReadTimeout and WriteTimeout intentionally unset:
+		// the gateway proxies streaming responses (e.g. LLM SSE) which can
+		// legitimately take minutes. Per-handler timeouts via context are
+		// the right granularity, not server-level limits.
+	}
+
+	// serverErr receives ListenAndServe's exit reason.
+	// It's a buffered channel of size 1 so the goroutine can deliver its
+	// error and exit even if no one is listening yet (e.g. immediate signal).
+	serverErr := make(chan error, 1)
+	go func() {
+		fmt.Printf("portcullis: the gate is being raised (%s)\n", cfg.Env)
+		fmt.Printf("  addr:      %s\n", cfg.Addr)
+		fmt.Printf("  log_level: %s\n", cfg.LogLevel)
+		// ListenAndServe always returns a non-nil error. The expected one
+		// after Shutdown is http.ErrServerClosed; anything else is a real
+		// problem.
+		serverErr <- srv.ListenAndServe()
+	}()
+
+	// Wait for either:
+	//   1. The server to fail (rare — usually port already in use)
+	//   2. The context to cancel (Ctrl-C, SIGTERM)
+
+	select {
+	case err := <-serverErr:
+		return fmt.Errorf("server failed: %w", err)
+	case <-ctx.Done():
+		fmt.Println("portcullis: the gate falls")
+	}
+
+	// Graceful shutdown. Use a fresh context with a deadline; we can't reuse
+	// ctx because it's already cancelled — Shutdown would return immediately
+	// without giving in-flight requests time to drain.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		// Shutdown returned before all connections drained — either the
+		// 30-second deadline elapsed, or shutdown encountered an error.
+		// Either way, fall through to Close to force-terminate the rest.
+		fmt.Fprintf(os.Stderr, "shutdown deadline exceeded: %v; forcing close\n", err)
+		_ = srv.Close()
+	}
+
+	fmt.Println("portcullis: the gate has fallen")
+	//TODO: Shutdown gracefully the http server
+
 	// For now, just block on the context so Ctrl-C does something.
-	<-ctx.Done()
-	fmt.Println("portcullis: the gate falls")
 	return nil
 }

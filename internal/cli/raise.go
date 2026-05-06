@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/LightAwesome/portcullis/internal/config"
+	"github.com/LightAwesome/portcullis/internal/server"
 	"github.com/LightAwesome/portcullis/internal/store"
 )
 
@@ -46,14 +47,17 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer db.Close()
+	deps := &server.Dependencies{Config: cfg, Store: db}
+	// TODO: construct the HTTP handler.
+	// TODO: start the HTTP server, wait for ctx.Done().
+
+	handler := server.NewServer(deps)
 
 	fmt.Printf("portcullis: the gate is being raised (%s)\n", cfg.Env)
 	fmt.Printf("  addr:      %s\n", cfg.Addr)
 	fmt.Printf("  log_level: %s\n", cfg.LogLevel)
 
-	// TODO: construct the HTTP handler.
-	// TODO: start the HTTP server, wait for ctx.Done().
-
+	_ = handler
 	// For now, just block on the context so Ctrl-C does something.
 	<-ctx.Done()
 	fmt.Println("portcullis: the gate falls")

@@ -10,8 +10,8 @@ help: ## Show available targets.
 build: ## Compile the binary to ./bin/portcullis.
 	go build -o bin/portcullis ./cmd/portcullis
 
-run: ## Run the gateway directly via go run.
-	go run ./cmd/portcullis
+run: ## Run the gateway directly (alias for `go run ... raise`).
+	go run ./cmd/portcullis raise
 
 test: ## Run all tests with race detector.
 	go test -race ./...

@@ -37,3 +37,4 @@ coverage.html
 
 # Logs
 *.log
+/scratch/

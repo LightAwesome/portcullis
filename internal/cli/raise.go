@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
 	"github.com/LightAwesome/portcullis/internal/server"
 	"github.com/LightAwesome/portcullis/internal/store"
@@ -50,7 +51,13 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer db.Close()
-	deps := &server.Dependencies{Config: cfg, Store: db}
+
+	auth, err := auth.NewAuthenticator(cfg.KeyPepper)
+	if err != nil {
+		return fmt.Errorf("init authenticator: %w", err)
+	}
+
+	deps := &server.Dependencies{Config: cfg, Store: db, Authenticator: auth}
 	// TODO: construct the HTTP handler.
 	// TODO: start the HTTP server, wait for ctx.Done().
 

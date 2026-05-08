@@ -1,22 +1,37 @@
 package server
 
-import "github.com/go-chi/chi/v5"
+import (
+	"fmt"
+	"net/http"
 
-// addRoutes registers all endpoints the gateway exposes.
-//
-// This is the single source of truth for "what URLs does this server
-// serve?" — grep here, not anywhere else, to find a route.
-//
-// Route layout:
-//
-//	GET  /health         — system health, used by Docker and uptime monitors
-//
-// Future routes (added in later phases):
-//
-//	GET  /metrics        — Prometheus scrape endpoint            (P3.6)
-//	ALL  /proxy/{p}/*    — authenticated, rate-limited proxy     (P1.13–P2.4)
-//	/admin/*             — admin API, gated by X-Admin-Key       (P1.15, P4)
-//	/dashboard/*         — embedded React SPA                    (P8)
+	"github.com/go-chi/chi/v5"
+)
+
 func addRoutes(mux chi.Router, deps *Dependencies) {
 	mux.Get("/health", handleHealth(deps))
+
+	// Authenticated routes. The proxy handler in P1.17 will replace this
+	// placeholder; we mount the middleware here now so we can manually
+	// verify the auth flow before there's a real proxy to test against.
+	mux.Route("/proxy", func(r chi.Router) {
+		r.Use(authMiddleware(deps))
+		r.HandleFunc("/*", handleProxyPlaceholder(deps))
+	})
+}
+
+// handleProxyPlaceholder returns a stub that confirms auth succeeded.
+// Removed in P1.17 when the real proxy lands.
+func handleProxyPlaceholder(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		client, ok := ClientFromContext(r.Context())
+		if !ok {
+			// Defense in depth — middleware should have set this.
+			writeError(w, http.StatusInternalServerError,
+				"no_client_in_context", "the gate is confused")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"authenticated_as":%q,"path":%q}`+"\n", client.Name, r.URL.Path)
+	}
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
 	"github.com/LightAwesome/portcullis/internal/store"
 )
@@ -28,8 +29,9 @@ import (
 // NewServer. Tests construct their own Dependencies with fakes or
 // testcontainer-backed real implementations.
 type Dependencies struct {
-	Config *config.Config
-	Store  *store.Store
+	Config        *config.Config
+	Store         *store.Store
+	Authenticator *auth.Authenticator
 	// Logger, Metrics, etc. arrive in later phases.
 }
 

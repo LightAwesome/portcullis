@@ -17,6 +17,11 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 		r.Use(authMiddleware(deps))
 		r.HandleFunc("/*", handleProxyPlaceholder(deps))
 	})
+
+	mux.Route("/admin", func(r chi.Router) {
+		r.Use(adminAuthMiddleware(deps))
+		r.Get("/ping", handleAdminPing(deps))
+	})
 }
 
 // handleProxyPlaceholder returns a stub that confirms auth succeeded.
@@ -33,5 +38,13 @@ func handleProxyPlaceholder(deps *Dependencies) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, `{"authenticated_as":%q,"path":%q}`+"\n", client.Name, r.URL.Path)
+	}
+}
+
+func handleAdminPing(deps *Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"admin":"acknowledged"}`)
 	}
 }

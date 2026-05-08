@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,60 @@ import (
 // newTestServer spins up Postgres + Redis containers, builds a Dependencies
 // against them, and returns the HTTP handler ready to be hit with httptest.
 func newTestServer(t *testing.T) http.Handler {
+
+	// t.Helper()
+	// ctx := context.Background()
+	//
+	// _, thisFile, _, _ := runtime.Caller(0)
+	// migrationsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
+	//
+	// pgContainer, err := postgres.Run(ctx,
+	// 	"postgres:16.4-alpine",
+	// 	postgres.WithDatabase("portcullis_test"),
+	// 	postgres.WithUsername("test"),
+	// 	postgres.WithPassword("test"),
+	// 	postgres.BasicWaitStrategies(),
+	// 	postgres.WithInitScripts(filepath.Join(migrationsDir, "0001_init.up.sql")),
+	// 	testcontainers.WithWaitStrategy(
+	// 		wait.ForLog("database system is ready to accept connections").
+	// 			WithOccurrence(2).
+	// 			WithStartupTimeout(30*time.Second),
+	// 	),
+	// )
+	// if err != nil {
+	// 	t.Fatalf("start postgres: %v", err)
+	// }
+	// t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
+	//
+	// rdContainer, err := redis.Run(ctx, "redis:7.4-alpine")
+	// if err != nil {
+	// 	t.Fatalf("start redis: %v", err)
+	// }
+	// t.Cleanup(func() { _ = rdContainer.Terminate(ctx) })
+	//
+	// pgURL, _ := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	// rdURL, _ := rdContainer.ConnectionString(ctx)
+	//
+	// db, err := store.New(ctx, pgURL, rdURL)
+	// if err != nil {
+	// 	t.Fatalf("open store: %v", err)
+	// }
+	// t.Cleanup(db.Close)
+	//
+	// deps := &server.Dependencies{
+	// 	Config: &config.Config{Env: config.EnvDevelopment, AdminKey: "test-admin-key-must-be-long-enough-to-pass-validation"},
+	// 	Store:  db,
+	// }
+
+	// return server.NewServer(deps)
+
+	handler, _ := newTestServerWithDeps(t)
+	return handler
+}
+
+// newTestServer spins up Postgres + Redis containers, builds a Dependencies
+// against them, and returns the HTTP handler ready to be hit with httptest.
+func newTestServerWithDeps(t *testing.T) (http.Handler, *server.Dependencies) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -63,10 +118,10 @@ func newTestServer(t *testing.T) http.Handler {
 	t.Cleanup(db.Close)
 
 	deps := &server.Dependencies{
-		Config: &config.Config{Env: config.EnvDevelopment},
+		Config: &config.Config{Env: config.EnvDevelopment, AdminKey: "test-admin-key-must-be-long-enough-to-pass-validation"},
 		Store:  db,
 	}
-	return server.NewServer(deps)
+	return server.NewServer(deps), deps
 }
 
 func TestHealth_OK(t *testing.T) {
@@ -115,5 +170,52 @@ func TestHealth_ServeMethodIsGet(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST to /health: got %d, want 405", rec.Code)
+	}
+}
+
+func TestAdminAuth_NoKey(t *testing.T) {
+	handler := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status: got %d, want 401; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"admin_auth_failed"`) {
+		t.Errorf("body: got %q, want code 'admin_auth_failed'", rec.Body.String())
+	}
+}
+
+func TestAdminAuth_WrongKey(t *testing.T) {
+	handler := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	req.Header.Set("X-Admin-Key", "definitely-not-the-right-key-and-long-enough-to-pass-validation")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status: got %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"admin_auth_failed"`) {
+		t.Errorf("body: got %q, want code 'admin_auth_failed'", rec.Body.String())
+	}
+}
+
+func TestAdminAuth_ValidKey(t *testing.T) {
+	handler, deps := newTestServerWithDeps(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"admin":"acknowledged"`) {
+		t.Errorf("body: got %q", rec.Body.String())
 	}
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"net/http"
 
@@ -85,6 +86,23 @@ func authMiddleware(deps *Dependencies) func(http.Handler) http.Handler {
 			// downstream handlers (proxy, rate limiter, log writer).
 			ctx := context.WithValue(r.Context(), clientCtxKey, client)
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func adminAuthMiddleware(deps *Dependencies) func(http.Handler) http.Handler {
+	expected := []byte(deps.Config.AdminKey)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			provided := []byte(r.Header.Get("X-Admin-Key"))
+
+			if subtle.ConstantTimeCompare(provided, expected) != 1 {
+				writeError(w, http.StatusUnauthorized, "admin_auth_failed", "the keep is closed to you")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+
 		})
 	}
 }

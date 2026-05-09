@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean tidy help up down nuke ps logs dev \
+.PHONY: build run test lint clean tidy help up down nuke ps logs dev seed \
         migrate-up migrate-down migrate-status migrate-create migrate-force
 # O
 # Default goal — runs when you just type `make`.
@@ -64,3 +64,6 @@ migrate-create: ## Create a new migration. Usage: make migrate-create name=add_u
 migrate-force: ## Force schema_migrations to a version. Usage: make migrate-force v=2
 	@if [ -z "$(v)" ]; then echo "Usage: make migrate-force v=<integer>"; exit 1; fi
 	@source .env && $(MIGRATE) force $(v)
+
+seed: ## Seed the running gateway with a test client and route.
+	@./scripts/seed.sh

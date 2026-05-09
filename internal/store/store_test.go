@@ -150,3 +150,15 @@ func TestCacheDel(t *testing.T) {
 		t.Fatalf("expected ErrNotFound after del, got %v", err)
 	}
 }
+
+func TestIsolation(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+	clients, err := db.ListClients(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(clients) != 0 {
+		t.Errorf("expected empty after reset, got %d clients", len(clients))
+	}
+}

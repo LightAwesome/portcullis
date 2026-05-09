@@ -16,9 +16,14 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
 	"github.com/LightAwesome/portcullis/internal/server"
 	"github.com/LightAwesome/portcullis/internal/store"
+)
+
+const (
+	testPepper = "cd4f9d1494e3705d8f3b2a071684891d8495f531671620bbee5a8c6735bed38e"
 )
 
 // newTestServer spins up Postgres + Redis containers, builds a Dependencies
@@ -117,9 +122,16 @@ func newTestServerWithDeps(t *testing.T) (http.Handler, *server.Dependencies) {
 	}
 	t.Cleanup(db.Close)
 
+	authn, err := auth.NewAuthenticator(testPepper)
+
+	if err != nil {
+		t.Fatalf("auth setup error: %v", err)
+	}
+
 	deps := &server.Dependencies{
-		Config: &config.Config{Env: config.EnvDevelopment, AdminKey: "test-admin-key-must-be-long-enough-to-pass-validation"},
-		Store:  db,
+		Config:        &config.Config{Env: config.EnvDevelopment, AdminKey: "test-admin-key-must-be-long-enough-to-pass-validation"},
+		Store:         db,
+		Authenticator: authn,
 	}
 	return server.NewServer(deps), deps
 }
@@ -176,7 +188,7 @@ func TestHealth_ServeMethodIsGet(t *testing.T) {
 func TestAdminAuth_NoKey(t *testing.T) {
 	handler := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -191,7 +203,7 @@ func TestAdminAuth_NoKey(t *testing.T) {
 func TestAdminAuth_WrongKey(t *testing.T) {
 	handler := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients", strings.NewReader(`{}`))
 	req.Header.Set("X-Admin-Key", "definitely-not-the-right-key-and-long-enough-to-pass-validation")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -204,18 +216,169 @@ func TestAdminAuth_WrongKey(t *testing.T) {
 	}
 }
 
+//	func TestAdminAuth_ValidKey(t *testing.T) {
+//		handler, deps := newTestServerWithDeps(t)
+//
+//		req := httptest.NewRequest(http.MethodGet, "/admin/clients", nil)
+//		req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+//		rec := httptest.NewRecorder()
+//		handler.ServeHTTP(rec, req)
+//
+//		if rec.Code != http.StatusOK {
+//			t.Errorf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
+//		}
+//		if !strings.Contains(rec.Body.String(), `"admin":"acknowledged"`) {
+//			t.Errorf("body: got %q", rec.Body.String())
+//		}
+//	}
 func TestAdminAuth_ValidKey(t *testing.T) {
 	handler, deps := newTestServerWithDeps(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients",
+		strings.NewReader(`{"name":"auth-test"}`))
 	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Errorf("status: got %d, want 201; body: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"admin":"acknowledged"`) {
+}
+
+func TestCreateClient_Success(t *testing.T) {
+
+	handler, deps := newTestServerWithDeps(t)
+
+	body := strings.NewReader(`{"name":"test-garrison"}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Name    string `json:"name"`
+		KeyID   string `json:"key_id"`
+		Key     string `json:"key"`
+		Warning string `json:"warning"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Name != "test-garrison" {
+		t.Errorf("name: got %q", resp.Name)
+	}
+	if !strings.HasPrefix(resp.Key, "pck_") {
+		t.Errorf("key has no prefix: %q", resp.Key)
+	}
+	if !strings.Contains(resp.Key, resp.KeyID) {
+		t.Errorf("key %q should contain key_id %q", resp.Key, resp.KeyID)
+	}
+	if resp.Warning == "" {
+		t.Error("warning field is empty")
+	}
+}
+
+func TestCreateClient_MissingName(t *testing.T) {
+	handler, deps := newTestServerWithDeps(t)
+
+	body := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"missing_name"`) {
+		t.Errorf("body: got %q", rec.Body.String())
+	}
+}
+
+func TestCreateClient_UnknownField(t *testing.T) {
+	handler, deps := newTestServerWithDeps(t)
+
+	body := strings.NewReader(`{"namee":"typo"}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"bad_request"`) {
+		t.Errorf("body: got %q", rec.Body.String())
+	}
+}
+
+func TestCreateRoute_Success(t *testing.T) {
+	handler, deps := newTestServerWithDeps(t)
+
+	body := strings.NewReader(`{"prefix":"test","target_base_url":"https://example.com","upstream_secret":"secret123"}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/routes", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, hasSecret := resp["upstream_secret"]; hasSecret {
+		t.Error("response should not include upstream_secret")
+	}
+}
+
+func TestCreateRoute_InvalidPrefix(t *testing.T) {
+	handler, deps := newTestServerWithDeps(t)
+
+	body := strings.NewReader(`{"prefix":"BAD","target_base_url":"https://example.com","upstream_secret":"x"}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/routes", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"invalid_prefix"`) {
+		t.Errorf("body: got %q", rec.Body.String())
+	}
+}
+
+func TestCreateRoute_DuplicatePrefix(t *testing.T) {
+	handler, deps := newTestServerWithDeps(t)
+
+	body1 := `{"prefix":"dupe","target_base_url":"https://example.com","upstream_secret":"x"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/routes", strings.NewReader(body1))
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first create: got %d", rec.Code)
+	}
+
+	// Second create with same prefix should 409.
+	req = httptest.NewRequest(http.MethodPost, "/admin/routes", strings.NewReader(body1))
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"prefix_taken"`) {
 		t.Errorf("body: got %q", rec.Body.String())
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/LightAwesome/portcullis/internal/admin"
+	"github.com/LightAwesome/portcullis/internal/httpx"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -21,6 +23,8 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 	mux.Route("/admin", func(r chi.Router) {
 		r.Use(adminAuthMiddleware(deps))
 		r.Get("/ping", handleAdminPing(deps))
+		r.Post("/clients", admin.HandleCreateClient(deps.Authenticator, deps.Store))
+		r.Post("/routes", admin.HandleCreateRoute(deps.Store))
 	})
 }
 
@@ -31,7 +35,7 @@ func handleProxyPlaceholder(deps *Dependencies) http.HandlerFunc {
 		client, ok := ClientFromContext(r.Context())
 		if !ok {
 			// Defense in depth — middleware should have set this.
-			writeError(w, http.StatusInternalServerError,
+			httpx.WriteError(w, http.StatusInternalServerError,
 				"no_client_in_context", "the gate is confused")
 			return
 		}
@@ -41,6 +45,7 @@ func handleProxyPlaceholder(deps *Dependencies) http.HandlerFunc {
 	}
 }
 
+// TODO: Could abstract this later to its own file but seems unnecessary right now.
 func handleAdminPing(deps *Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

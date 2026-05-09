@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/LightAwesome/portcullis/internal/auth"
+	"github.com/LightAwesome/portcullis/internal/httpx"
 	"github.com/LightAwesome/portcullis/internal/store"
 )
 
@@ -44,14 +45,14 @@ func authMiddleware(deps *Dependencies) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rawKey := r.Header.Get("X-Gateway-Key")
 			if rawKey == "" {
-				writeError(w, http.StatusUnauthorized,
+				httpx.WriteError(w, http.StatusUnauthorized,
 					"no_key", "halt — no banner, no entry")
 				return
 			}
 
 			parsed, err := auth.ParseKey(rawKey)
 			if err != nil {
-				writeError(w, http.StatusUnauthorized,
+				httpx.WriteError(w, http.StatusUnauthorized,
 					"malformed_key", "that banner is not recognised at this gate")
 				return
 			}
@@ -59,25 +60,25 @@ func authMiddleware(deps *Dependencies) func(http.Handler) http.Handler {
 			client, err := deps.Store.GetClientByKeyID(r.Context(), parsed.KeyID)
 			if err != nil {
 				if errors.Is(err, store.ErrNotFound) {
-					writeError(w, http.StatusUnauthorized,
+					httpx.WriteError(w, http.StatusUnauthorized,
 						"unknown_key", "that banner is not recognised at this gate")
 					return
 				}
 				// Real backend error — log path will be added in P3.
-				writeError(w, http.StatusInternalServerError,
+				httpx.WriteError(w, http.StatusInternalServerError,
 					"auth_lookup_failed", "the gate cannot verify your banner")
 				return
 			}
 
 			if !client.IsActive {
-				writeError(w, http.StatusUnauthorized,
+				httpx.WriteError(w, http.StatusUnauthorized,
 					"inactive_key", "that banner has been struck from the rolls")
 				return
 			}
 
 			ok, err := deps.Authenticator.Verify(parsed.Secret, client.KeyHash)
 			if err != nil || !ok {
-				writeError(w, http.StatusUnauthorized,
+				httpx.WriteError(w, http.StatusUnauthorized,
 					"invalid_key", "that banner is not recognised at this gate")
 				return
 			}
@@ -97,7 +98,7 @@ func adminAuthMiddleware(deps *Dependencies) func(http.Handler) http.Handler {
 			provided := []byte(r.Header.Get("X-Admin-Key"))
 
 			if subtle.ConstantTimeCompare(provided, expected) != 1 {
-				writeError(w, http.StatusUnauthorized, "admin_auth_failed", "the keep is closed to you")
+				httpx.WriteError(w, http.StatusUnauthorized, "admin_auth_failed", "the keep is closed to you")
 				return
 			}
 

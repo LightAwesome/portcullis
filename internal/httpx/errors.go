@@ -1,4 +1,4 @@
-package server
+package httpx
 
 import (
 	"encoding/json"
@@ -16,11 +16,11 @@ type errorResponse struct {
 	Code  string `json:"code"`
 }
 
-// writeError renders a themed JSON error response.
+// WriteError renders a themed JSON error response.
 //
 // Themed strings should match . Codes follow snake_case and are
 // stable across themed-prose changes.
-func writeError(w http.ResponseWriter, status int, code, themed string) {
+func WriteError(w http.ResponseWriter, status int, code, themed string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(errorResponse{

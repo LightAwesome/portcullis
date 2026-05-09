@@ -97,3 +97,29 @@ func newRedis(ctx context.Context, redisURL string) (*redis.Client, error) {
 	return rdb, nil
 
 }
+
+// TruncateAllForTesting wipes all gateway tables. ONLY for use in tests —
+// the suffix is the convention; calling this from production code would
+// destroy all data.
+func (s *Store) TruncateAllForTesting(ctx context.Context) error {
+	const q = `
+		TRUNCATE
+			request_logs,
+			rate_limit_policies,
+			upstream_routes,
+			clients
+		RESTART IDENTITY CASCADE
+	`
+	if _, err := s.pool.Exec(ctx, q); err != nil {
+		return fmt.Errorf("truncate: %w", err)
+	}
+	return nil
+}
+
+// FlushCacheForTesting wipes the Redis database. ONLY for tests.
+func (s *Store) FlushCacheForTesting(ctx context.Context) error {
+	if err := s.redis.FlushDB(ctx).Err(); err != nil {
+		return fmt.Errorf("flush: %w", err)
+	}
+	return nil
+}

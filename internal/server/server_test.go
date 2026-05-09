@@ -3,151 +3,107 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
-	"runtime"
+	"os"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/modules/redis"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
 	"github.com/LightAwesome/portcullis/internal/server"
-	"github.com/LightAwesome/portcullis/internal/store"
+	"github.com/LightAwesome/portcullis/internal/testutil"
 )
 
 const (
+	// testPepper is the HMAC pepper used across server tests. Not a real
+	// secret; the bytes are fixed so test failures are reproducible.
 	testPepper = "cd4f9d1494e3705d8f3b2a071684891d8495f531671620bbee5a8c6735bed38e"
+
+	// testAdminKey is the admin token tests use to authenticate to /admin.
+	testAdminKey = "test-admin-key-must-be-long-enough-to-pass-validation"
 )
 
-// newTestServer spins up Postgres + Redis containers, builds a Dependencies
-// against them, and returns the HTTP handler ready to be hit with httptest.
-func newTestServer(t *testing.T) http.Handler {
+// Package-level state. TestMain initializes; tests reuse.
+var (
+	infra *testutil.Infra
+	deps  *server.Dependencies
+)
 
-	// t.Helper()
-	// ctx := context.Background()
-	//
-	// _, thisFile, _, _ := runtime.Caller(0)
-	// migrationsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
-	//
-	// pgContainer, err := postgres.Run(ctx,
-	// 	"postgres:16.4-alpine",
-	// 	postgres.WithDatabase("portcullis_test"),
-	// 	postgres.WithUsername("test"),
-	// 	postgres.WithPassword("test"),
-	// 	postgres.BasicWaitStrategies(),
-	// 	postgres.WithInitScripts(filepath.Join(migrationsDir, "0001_init.up.sql")),
-	// 	testcontainers.WithWaitStrategy(
-	// 		wait.ForLog("database system is ready to accept connections").
-	// 			WithOccurrence(2).
-	// 			WithStartupTimeout(30*time.Second),
-	// 	),
-	// )
-	// if err != nil {
-	// 	t.Fatalf("start postgres: %v", err)
-	// }
-	// t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
-	//
-	// rdContainer, err := redis.Run(ctx, "redis:7.4-alpine")
-	// if err != nil {
-	// 	t.Fatalf("start redis: %v", err)
-	// }
-	// t.Cleanup(func() { _ = rdContainer.Terminate(ctx) })
-	//
-	// pgURL, _ := pgContainer.ConnectionString(ctx, "sslmode=disable")
-	// rdURL, _ := rdContainer.ConnectionString(ctx)
-	//
-	// db, err := store.New(ctx, pgURL, rdURL)
-	// if err != nil {
-	// 	t.Fatalf("open store: %v", err)
-	// }
-	// t.Cleanup(db.Close)
-	//
-	// deps := &server.Dependencies{
-	// 	Config: &config.Config{Env: config.EnvDevelopment, AdminKey: "test-admin-key-must-be-long-enough-to-pass-validation"},
-	// 	Store:  db,
-	// }
-
-	// return server.NewServer(deps)
-
-	handler, _ := newTestServerWithDeps(t)
-	return handler
-}
-
-// newTestServer spins up Postgres + Redis containers, builds a Dependencies
-// against them, and returns the HTTP handler ready to be hit with httptest.
-func newTestServerWithDeps(t *testing.T) (http.Handler, *server.Dependencies) {
-	t.Helper()
+// TestMain starts shared infrastructure once for the entire package.
+//
+// Each test that mutates state should call infra.Reset(t) at the start
+// to clear tables and Redis. Tests run sequentially within the package
+// (no t.Parallel()), so there's no cross-test interference beyond
+// ordering — and Reset addresses that.
+func TestMain(m *testing.M) {
 	ctx := context.Background()
 
-	_, thisFile, _, _ := runtime.Caller(0)
-	migrationsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
-
-	pgContainer, err := postgres.Run(ctx,
-		"postgres:16.4-alpine",
-		postgres.WithDatabase("portcullis_test"),
-		postgres.WithUsername("test"),
-		postgres.WithPassword("test"),
-		postgres.BasicWaitStrategies(),
-		postgres.WithInitScripts(filepath.Join(migrationsDir, "0001_init.up.sql")),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second),
-		),
-	)
+	var err error
+	infra, err = testutil.StartInfra(ctx)
 	if err != nil {
-		t.Fatalf("start postgres: %v", err)
+		fmt.Fprintf(os.Stderr, "test infrastructure setup: %v\n", err)
+		os.Exit(1)
 	}
-	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
-
-	rdContainer, err := redis.Run(ctx, "redis:7.4-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
-	t.Cleanup(func() { _ = rdContainer.Terminate(ctx) })
-
-	pgURL, _ := pgContainer.ConnectionString(ctx, "sslmode=disable")
-	rdURL, _ := rdContainer.ConnectionString(ctx)
-
-	db, err := store.New(ctx, pgURL, rdURL)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(db.Close)
 
 	authn, err := auth.NewAuthenticator(testPepper)
-
 	if err != nil {
-		t.Fatalf("auth setup error: %v", err)
+		fmt.Fprintf(os.Stderr, "authenticator: %v\n", err)
+		_ = teardown()
+		os.Exit(1)
 	}
 
-	deps := &server.Dependencies{
-		Config:        &config.Config{Env: config.EnvDevelopment, AdminKey: "test-admin-key-must-be-long-enough-to-pass-validation"},
-		Store:         db,
+	deps = &server.Dependencies{
+		Config: &config.Config{
+			Env:      config.EnvDevelopment,
+			AdminKey: testAdminKey,
+		},
+		Store:         infra.Store,
 		Authenticator: authn,
 	}
+
+	code := m.Run()
+	if err := teardown(); err != nil {
+		fmt.Fprintf(os.Stderr, "test teardown: %v\n", err)
+	}
+	os.Exit(code)
+}
+
+func teardown() error {
+	infra.Stop(context.Background())
+	return nil
+}
+
+// newTestHandler returns a fresh server handler against the shared deps.
+// Use this in every test that needs to make HTTP calls.
+func newTestHandler(t *testing.T) http.Handler {
+	t.Helper()
+	infra.Reset(t)
+	return server.NewServer(deps)
+}
+
+// newTestHandlerWithDeps is like newTestHandler but also returns deps for
+// tests that need to inspect or mutate them (e.g., tests that need the
+// admin key, or want to register clients via the store directly).
+func newTestHandlerWithDeps(t *testing.T) (http.Handler, *server.Dependencies) {
+	t.Helper()
+	infra.Reset(t)
 	return server.NewServer(deps), deps
 }
 
+// === Health ===
+
 func TestHealth_OK(t *testing.T) {
-	handler := newTestServer(t)
+	handler := newTestHandler(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
-
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json; charset=utf-8" {
 		t.Errorf("Content-Type: got %q", ct)
 	}
@@ -165,17 +121,16 @@ func TestHealth_OK(t *testing.T) {
 		t.Errorf("status: got %q, want %q", body.Status, "the gate stands")
 	}
 	if body.Postgres != "ok" {
-		t.Errorf("postgres: got %q, want %q", body.Postgres, "ok")
+		t.Errorf("postgres: got %q", body.Postgres)
 	}
 	if body.Redis != "ok" {
-		t.Errorf("redis: got %q, want %q", body.Redis, "ok")
+		t.Errorf("redis: got %q", body.Redis)
 	}
 }
 
 func TestHealth_ServeMethodIsGet(t *testing.T) {
-	handler := newTestServer(t)
+	handler := newTestHandler(t)
 
-	// POST to /health should be 405 Method Not Allowed (Chi's default).
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -185,10 +140,13 @@ func TestHealth_ServeMethodIsGet(t *testing.T) {
 	}
 }
 
-func TestAdminAuth_NoKey(t *testing.T) {
-	handler := newTestServer(t)
+// === Admin auth (point at a real admin route, not the dead /admin/ping) ===
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/clients", strings.NewReader(`{}`))
+func TestAdminAuth_NoKey(t *testing.T) {
+	handler := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients",
+		strings.NewReader(`{"name":"x"}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -196,14 +154,15 @@ func TestAdminAuth_NoKey(t *testing.T) {
 		t.Errorf("status: got %d, want 401; body: %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"code":"admin_auth_failed"`) {
-		t.Errorf("body: got %q, want code 'admin_auth_failed'", rec.Body.String())
+		t.Errorf("body: got %q", rec.Body.String())
 	}
 }
 
 func TestAdminAuth_WrongKey(t *testing.T) {
-	handler := newTestServer(t)
+	handler := newTestHandler(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/clients", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients",
+		strings.NewReader(`{"name":"x"}`))
 	req.Header.Set("X-Admin-Key", "definitely-not-the-right-key-and-long-enough-to-pass-validation")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -212,27 +171,12 @@ func TestAdminAuth_WrongKey(t *testing.T) {
 		t.Errorf("status: got %d, want 401", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), `"code":"admin_auth_failed"`) {
-		t.Errorf("body: got %q, want code 'admin_auth_failed'", rec.Body.String())
+		t.Errorf("body: got %q", rec.Body.String())
 	}
 }
 
-//	func TestAdminAuth_ValidKey(t *testing.T) {
-//		handler, deps := newTestServerWithDeps(t)
-//
-//		req := httptest.NewRequest(http.MethodGet, "/admin/clients", nil)
-//		req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
-//		rec := httptest.NewRecorder()
-//		handler.ServeHTTP(rec, req)
-//
-//		if rec.Code != http.StatusOK {
-//			t.Errorf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
-//		}
-//		if !strings.Contains(rec.Body.String(), `"admin":"acknowledged"`) {
-//			t.Errorf("body: got %q", rec.Body.String())
-//		}
-//	}
 func TestAdminAuth_ValidKey(t *testing.T) {
-	handler, deps := newTestServerWithDeps(t)
+	handler, deps := newTestHandlerWithDeps(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/clients",
 		strings.NewReader(`{"name":"auth-test"}`))
@@ -245,15 +189,14 @@ func TestAdminAuth_ValidKey(t *testing.T) {
 	}
 }
 
-func TestCreateClient_Success(t *testing.T) {
+// === Client creation ===
 
-	handler, deps := newTestServerWithDeps(t)
+func TestCreateClient_Success(t *testing.T) {
+	handler, deps := newTestHandlerWithDeps(t)
 
 	body := strings.NewReader(`{"name":"test-garrison"}`)
 	req := httptest.NewRequest(http.MethodPost, "/admin/clients", body)
 	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
-	req.Header.Set("Content-Type", "application/json")
-
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -285,7 +228,7 @@ func TestCreateClient_Success(t *testing.T) {
 }
 
 func TestCreateClient_MissingName(t *testing.T) {
-	handler, deps := newTestServerWithDeps(t)
+	handler, deps := newTestHandlerWithDeps(t)
 
 	body := strings.NewReader(`{}`)
 	req := httptest.NewRequest(http.MethodPost, "/admin/clients", body)
@@ -302,7 +245,7 @@ func TestCreateClient_MissingName(t *testing.T) {
 }
 
 func TestCreateClient_UnknownField(t *testing.T) {
-	handler, deps := newTestServerWithDeps(t)
+	handler, deps := newTestHandlerWithDeps(t)
 
 	body := strings.NewReader(`{"namee":"typo"}`)
 	req := httptest.NewRequest(http.MethodPost, "/admin/clients", body)
@@ -318,8 +261,10 @@ func TestCreateClient_UnknownField(t *testing.T) {
 	}
 }
 
+// === Route creation ===
+
 func TestCreateRoute_Success(t *testing.T) {
-	handler, deps := newTestServerWithDeps(t)
+	handler, deps := newTestHandlerWithDeps(t)
 
 	body := strings.NewReader(`{"prefix":"test","target_base_url":"https://example.com","upstream_secret":"secret123"}`)
 	req := httptest.NewRequest(http.MethodPost, "/admin/routes", body)
@@ -341,7 +286,7 @@ func TestCreateRoute_Success(t *testing.T) {
 }
 
 func TestCreateRoute_InvalidPrefix(t *testing.T) {
-	handler, deps := newTestServerWithDeps(t)
+	handler, deps := newTestHandlerWithDeps(t)
 
 	body := strings.NewReader(`{"prefix":"BAD","target_base_url":"https://example.com","upstream_secret":"x"}`)
 	req := httptest.NewRequest(http.MethodPost, "/admin/routes", body)
@@ -358,7 +303,7 @@ func TestCreateRoute_InvalidPrefix(t *testing.T) {
 }
 
 func TestCreateRoute_DuplicatePrefix(t *testing.T) {
-	handler, deps := newTestServerWithDeps(t)
+	handler, deps := newTestHandlerWithDeps(t)
 
 	body1 := `{"prefix":"dupe","target_base_url":"https://example.com","upstream_secret":"x"}`
 
@@ -370,7 +315,6 @@ func TestCreateRoute_DuplicatePrefix(t *testing.T) {
 		t.Fatalf("first create: got %d", rec.Code)
 	}
 
-	// Second create with same prefix should 409.
 	req = httptest.NewRequest(http.MethodPost, "/admin/routes", strings.NewReader(body1))
 	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
 	rec = httptest.NewRecorder()

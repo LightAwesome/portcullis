@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/LightAwesome/portcullis/internal/admin"
-	"github.com/LightAwesome/portcullis/internal/httpx"
+	"github.com/LightAwesome/portcullis/internal/proxy"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -17,7 +17,11 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 	// verify the auth flow before there's a real proxy to test against.
 	mux.Route("/proxy", func(r chi.Router) {
 		r.Use(authMiddleware(deps))
-		r.HandleFunc("/*", handleProxyPlaceholder(deps))
+		// r.HandleFunc("/*", handleProxyPlaceholder(deps))
+		r.HandleFunc("/{prefix}/*", proxy.Handler(deps.Store))
+		// Bare /proxy/{prefix} (no trailing path) also works as the wildcard
+		// matches empty:
+		r.HandleFunc("/{prefix}", proxy.Handler(deps.Store))
 	})
 
 	mux.Route("/admin", func(r chi.Router) {
@@ -30,21 +34,22 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 
 // handleProxyPlaceholder returns a stub that confirms auth succeeded.
 // Removed in P1.17 when the real proxy lands.
-func handleProxyPlaceholder(deps *Dependencies) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		client, ok := ClientFromContext(r.Context())
-		if !ok {
-			// Defense in depth — middleware should have set this.
-			httpx.WriteError(w, http.StatusInternalServerError,
-				"no_client_in_context", "the gate is confused")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"authenticated_as":%q,"path":%q}`+"\n", client.Name, r.URL.Path)
-	}
-}
-
+//
+//	func handleProxyPlaceholder(deps *Dependencies) http.HandlerFunc {
+//		return func(w http.ResponseWriter, r *http.Request) {
+//			client, ok := ClientFromContext(r.Context())
+//			if !ok {
+//				// Defense in depth — middleware should have set this.
+//				httpx.WriteError(w, http.StatusInternalServerError,
+//					"no_client_in_context", "the gate is confused")
+//				return
+//			}
+//			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+//			w.WriteHeader(http.StatusOK)
+//			fmt.Fprintf(w, `{"authenticated_as":%q,"path":%q}`+"\n", client.Name, r.URL.Path)
+//		}
+//	}
+//
 // TODO: Could abstract this later to its own file but seems unnecessary right now.
 func handleAdminPing(deps *Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -324,5 +325,157 @@ func TestCreateRoute_DuplicatePrefix(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"code":"prefix_taken"`) {
 		t.Errorf("body: got %q", rec.Body.String())
+	}
+}
+
+// === Proxy ===
+
+// registerSeed creates a client and a route pointing at upstream.URL.
+// Returns the gateway key for the client. Tests use this to set up the
+// minimum world to exercise the proxy.
+func registerSeed(t *testing.T, deps *server.Dependencies, prefix, upstreamURL string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	key, hash, err := deps.Authenticator.GenerateKey()
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	if _, err := deps.Store.CreateClient(ctx, "proxy-test", key.KeyID, hash); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := deps.Store.CreateRoute(ctx, prefix, upstreamURL, []byte("test-secret")); err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	return key.Raw
+}
+
+func TestProxy_ForwardsAndRewrites(t *testing.T) {
+	// Stand up a fake upstream that records what it received.
+	var (
+		gotPath       string
+		gotMethod     string
+		gotAuth       string
+		gotGatewayKey string
+		gotHost       string
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotAuth = r.Header.Get("Authorization")
+		gotGatewayKey = r.Header.Get("X-Gateway-Key")
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"upstream_says":"hello"}`))
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	gatewayKey := registerSeed(t, deps, "fake", upstream.URL)
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/fake/some/path", nil)
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	body, _ := io.ReadAll(rec.Body)
+	if !strings.Contains(string(body), `"upstream_says":"hello"`) {
+		t.Errorf("body: got %q, want upstream's response", body)
+	}
+
+	// Verify the upstream saw a properly rewritten request.
+	if gotMethod != "GET" {
+		t.Errorf("method: got %q, want GET", gotMethod)
+	}
+	if gotPath != "/some/path" {
+		t.Errorf("path: got %q, want '/some/path'", gotPath)
+	}
+	if gotAuth != "Bearer test-secret" {
+		t.Errorf("auth: got %q, want 'Bearer test-secret'", gotAuth)
+	}
+	if gotGatewayKey != "" {
+		t.Errorf("X-Gateway-Key should be stripped, got %q", gotGatewayKey)
+	}
+	// The host should be the upstream's host (httptest.Server uses 127.0.0.1:N).
+	if !strings.Contains(gotHost, "127.0.0.1:") {
+		t.Errorf("Host: got %q, expected upstream's host", gotHost)
+	}
+}
+
+func TestProxy_NoSuchRoute(t *testing.T) {
+	handler, deps := newTestHandlerWithDeps(t)
+
+	// Create a client but no route.
+	key, hash, _ := deps.Authenticator.GenerateKey()
+	if _, err := deps.Store.CreateClient(context.Background(), "x", key.KeyID, hash); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/nonexistent/anything", nil)
+	req.Header.Set("X-Gateway-Key", key.Raw)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status: got %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"no_such_route"`) {
+		t.Errorf("body: got %q", rec.Body.String())
+	}
+}
+
+func TestProxy_UpstreamUnreachable(t *testing.T) {
+	handler, deps := newTestHandlerWithDeps(t)
+	// Use a target URL that refuses connections — port 1 is reserved.
+	gatewayKey := registerSeed(t, deps, "broken", "http://127.0.0.1:1")
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/broken/anything", nil)
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status: got %d, want 502", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"upstream_unreachable"`) {
+		t.Errorf("body: got %q", rec.Body.String())
+	}
+}
+
+func TestProxy_ForwardsBodyAndQuery(t *testing.T) {
+	var (
+		gotBody  []byte
+		gotQuery string
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	gatewayKey := registerSeed(t, deps, "fake", upstream.URL)
+
+	req := httptest.NewRequest(http.MethodPost, "/proxy/fake/path?foo=bar",
+		strings.NewReader(`{"data":"hello"}`))
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status: got %d", rec.Code)
+	}
+	if string(gotBody) != `{"data":"hello"}` {
+		t.Errorf("body: got %q, want '{\"data\":\"hello\"}'", gotBody)
+	}
+	if gotQuery != "foo=bar" {
+		t.Errorf("query: got %q, want 'foo=bar'", gotQuery)
 	}
 }

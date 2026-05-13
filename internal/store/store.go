@@ -45,8 +45,18 @@ func New(ctx context.Context, databaseURL string, redisURL string) (*Store, erro
 		pool.Close()
 		return nil, fmt.Errorf("redis error: %w", err)
 	}
+	s := &Store{pool: pool, redis: rdb}
 
-	return &Store{pool: pool, redis: rdb}, nil
+	// Preload Lua scripts so the first request doesn't pay the cache-miss
+	// round trip. Best-effort: failure here is non-fatal because the script
+	// runner falls back to EVAL transparently.
+	if err := s.preloadRateLimitScript(ctx); err != nil {
+		// Once we have logging in P3.1, this becomes a logger.Warn. For now,
+		// silent — Run will EVAL on first call and self-heal.
+		_ = err
+	}
+
+	return s, nil
 }
 
 func (s *Store) Close() {

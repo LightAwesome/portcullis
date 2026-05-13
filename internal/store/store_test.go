@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -160,5 +162,193 @@ func TestIsolation(t *testing.T) {
 	}
 	if len(clients) != 0 {
 		t.Errorf("expected empty after reset, got %d clients", len(clients))
+	}
+}
+
+func TestRateLimit_AllowsUnderLimit(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	// Window of 60 seconds, limit of 3. First three calls should allow.
+	for i := 0; i < 3; i++ {
+		result, err := db.CheckRateLimit(ctx, "client1", "test", 3, 60, int64(1700000000000+i))
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if !result.Allowed {
+			t.Errorf("call %d: should be allowed", i)
+		}
+		expectedRemaining := int64(3 - i - 1)
+		if result.Remaining != expectedRemaining {
+			t.Errorf("call %d: remaining got %d, want %d", i, result.Remaining, expectedRemaining)
+		}
+	}
+}
+
+func TestRateLimit_DeniesOverLimit(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	// Fill the bucket.
+	for i := 0; i < 3; i++ {
+		if _, err := db.CheckRateLimit(ctx, "client1", "test", 3, 60, int64(1700000000000+i)); err != nil {
+			t.Fatalf("setup %d: %v", i, err)
+		}
+	}
+
+	// Fourth should deny.
+	result, err := db.CheckRateLimit(ctx, "client1", "test", 3, 60, 1700000000010)
+	if err != nil {
+		t.Fatalf("deny call: %v", err)
+	}
+	if result.Allowed {
+		t.Error("fourth call should be denied")
+	}
+	if result.Remaining != 0 {
+		t.Errorf("denied remaining: got %d, want 0", result.Remaining)
+	}
+}
+
+func TestRateLimit_WindowResetsAfterExpiry(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	// Fill the bucket at t=0.
+	for i := 0; i < 3; i++ {
+		if _, err := db.CheckRateLimit(ctx, "client1", "test", 3, 60, int64(1700000000000+i)); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+
+	// Skip 70 seconds — past the 60s window.
+	result, err := db.CheckRateLimit(ctx, "client1", "test", 3, 60, 1700000070000)
+	if err != nil {
+		t.Fatalf("post-window: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("post-window call should be allowed")
+	}
+	if result.Remaining != 2 {
+		t.Errorf("post-window remaining: got %d, want 2", result.Remaining)
+	}
+}
+
+func TestRateLimit_IsolatedByClient(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	// client1 fills their bucket.
+	for i := 0; i < 3; i++ {
+		if _, err := db.CheckRateLimit(ctx, "client1", "test", 3, 60, int64(1700000000000+i)); err != nil {
+			t.Fatalf("client1 setup: %v", err)
+		}
+	}
+
+	// client2 should be unaffected.
+	result, err := db.CheckRateLimit(ctx, "client2", "test", 3, 60, 1700000000010)
+	if err != nil {
+		t.Fatalf("client2 call: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("client2 should be allowed; their bucket is empty")
+	}
+	if result.Remaining != 2 {
+		t.Errorf("client2 remaining: got %d, want 2", result.Remaining)
+	}
+}
+
+func TestRateLimit_IsolatedByRoute(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	// Fill the bucket on route "a".
+	for i := 0; i < 3; i++ {
+		if _, err := db.CheckRateLimit(ctx, "client1", "a", 3, 60, int64(1700000000000+i)); err != nil {
+			t.Fatalf("route a: %v", err)
+		}
+	}
+
+	// Route "b" should be unaffected.
+	result, err := db.CheckRateLimit(ctx, "client1", "b", 3, 60, 1700000000010)
+	if err != nil {
+		t.Fatalf("route b: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("route b should be allowed; per-route bucket is independent")
+	}
+}
+
+func TestRateLimit_ResetMSReflectsOldestEntry(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	// First call at t=1000.
+	result, err := db.CheckRateLimit(ctx, "client1", "test", 3, 60, 1700000001000)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	// The oldest (and only) entry's score is 1700000001000.
+	// Window is 60s = 60000ms. So reset should be 1700000001000 + 60000 = 1700000061000.
+	if result.ResetMS != 1700000061000 {
+		t.Errorf("reset_ms: got %d, want 1700000061000", result.ResetMS)
+	}
+}
+
+func TestRateLimit_AtomicUnderConcurrency(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	const (
+		clientID   = "client1"
+		prefix     = "test"
+		maxReqs    = int64(100)
+		windowSec  = int64(60)
+		goroutines = 50
+		perWorker  = 5
+	)
+
+	// Total requests = 50 * 5 = 250 against a limit of 100.
+	// Expected: exactly 100 allowed, exactly 150 denied.
+
+	now := time.Now().UnixMilli()
+
+	var (
+		allowed atomic.Int64
+		denied  atomic.Int64
+	)
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				// Each call gets a distinct nowMS so members don't collide
+				// at the script level — but the script's own
+				// uniqueness suffix would handle that anyway.
+				ts := now + int64(g*perWorker+i)
+				result, err := db.CheckRateLimit(ctx, clientID, prefix, maxReqs, windowSec, ts)
+				if err != nil {
+					t.Errorf("call: %v", err)
+					return
+				}
+				if result.Allowed {
+					allowed.Add(1)
+				} else {
+					denied.Add(1)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	gotAllowed := allowed.Load()
+	gotDenied := denied.Load()
+
+	if gotAllowed != maxReqs {
+		t.Errorf("allowed: got %d, want %d", gotAllowed, maxReqs)
+	}
+	if gotDenied != int64(goroutines*perWorker)-maxReqs {
+		t.Errorf("denied: got %d, want %d", gotDenied, int64(goroutines*perWorker)-maxReqs)
 	}
 }

@@ -57,8 +57,10 @@ func TestMain(m *testing.M) {
 
 	deps = &server.Dependencies{
 		Config: &config.Config{
-			Env:      config.EnvDevelopment,
-			AdminKey: testAdminKey,
+			Env:                  config.EnvDevelopment,
+			AdminKey:             testAdminKey,
+			DefaultMaxRequests:   60,
+			DefaultWindowSeconds: 60,
 		},
 		Store:         infra.Store,
 		Authenticator: authn,

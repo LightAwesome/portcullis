@@ -46,7 +46,8 @@ func runServer(ctx context.Context) error {
 		return err
 	}
 
-	db, err := store.New(ctx, cfg.DatabaseURL, cfg.RedisURL)
+	db, err := store.New(ctx, cfg.DatabaseURL, cfg.RedisURL,
+		cfg.DefaultMaxRequests, cfg.DefaultWindowSeconds)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}

@@ -352,3 +352,127 @@ func TestRateLimit_AtomicUnderConcurrency(t *testing.T) {
 		t.Errorf("denied: got %d, want %d", gotDenied, int64(goroutines*perWorker)-maxReqs)
 	}
 }
+
+func TestGetRateLimitPolicy_FallsThroughToDefault(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	// No policy registered. Should return the default.
+	policy, err := db.GetRateLimitPolicy(ctx, "00000000-0000-0000-0000-000000000001", "no-such-route")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !policy.IsDefault {
+		t.Error("policy should be marked as default")
+	}
+	if policy.MaxRequests != 60 || policy.WindowSeconds != 60 {
+		t.Errorf("defaults: got %d/%d, want 60/60", policy.MaxRequests, policy.WindowSeconds)
+	}
+}
+
+func TestCreateAndGetPolicy(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	keyHash := make([]byte, 32)
+	client, err := db.CreateClient(ctx, "test-client", "0123456789abcdef", keyHash)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	clientID, _ := client.ID.Value()
+	clientIDStr := clientID.(string)
+
+	created, err := db.CreateRateLimitPolicy(ctx, clientIDStr, "openai", 100, 30)
+	if err != nil {
+		t.Fatalf("create policy: %v", err)
+	}
+	if created.MaxRequests != 100 || created.WindowSeconds != 30 {
+		t.Errorf("created: got %d/%d, want 100/30", created.MaxRequests, created.WindowSeconds)
+	}
+
+	got, err := db.GetRateLimitPolicy(ctx, clientIDStr, "openai")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.IsDefault {
+		t.Error("policy should not be marked default")
+	}
+	if got.MaxRequests != 100 || got.WindowSeconds != 30 {
+		t.Errorf("got: got %d/%d, want 100/30", got.MaxRequests, got.WindowSeconds)
+	}
+}
+
+func TestCreatePolicy_UpsertSemantics(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	keyHash := make([]byte, 32)
+	client, _ := db.CreateClient(ctx, "test-client", "0123456789abcdef", keyHash)
+	clientID, _ := client.ID.Value()
+	clientIDStr := clientID.(string)
+
+	// First create: 100/30.
+	if _, err := db.CreateRateLimitPolicy(ctx, clientIDStr, "openai", 100, 30); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+
+	// Second "create" with different values: should update, not error.
+	updated, err := db.CreateRateLimitPolicy(ctx, clientIDStr, "openai", 200, 60)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if updated.MaxRequests != 200 || updated.WindowSeconds != 60 {
+		t.Errorf("upsert result: got %d/%d, want 200/60", updated.MaxRequests, updated.WindowSeconds)
+	}
+
+	got, err := db.GetRateLimitPolicy(ctx, clientIDStr, "openai")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.MaxRequests != 200 || got.WindowSeconds != 60 {
+		t.Errorf("get after upsert: got %d/%d, want 200/60", got.MaxRequests, got.WindowSeconds)
+	}
+}
+
+func TestCreatePolicy_UnknownClient(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	// Valid-looking UUID, but no such client.
+	_, err := db.CreateRateLimitPolicy(ctx, "00000000-0000-0000-0000-000000000000", "x", 10, 60)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown client, got %v", err)
+	}
+}
+
+func TestInvalidatePolicyCache(t *testing.T) {
+	db := reset(t)
+	ctx := context.Background()
+
+	keyHash := make([]byte, 32)
+	client, _ := db.CreateClient(ctx, "test-client", "0123456789abcdef", keyHash)
+	clientID, _ := client.ID.Value()
+	clientIDStr := clientID.(string)
+
+	// Look up a policy that doesn't exist — caches the default.
+	_, err := db.GetRateLimitPolicy(ctx, clientIDStr, "openai")
+	if err != nil {
+		t.Fatalf("first get: %v", err)
+	}
+
+	// Confirm it's cached.
+	if _, err := db.CacheGet(ctx, "policy:"+clientIDStr+":openai"); err != nil {
+		t.Fatalf("expected cache hit: %v", err)
+	}
+
+	// Invalidate.
+	if err := db.InvalidatePolicyCache(ctx, clientIDStr, "openai"); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+
+	// Confirm it's gone.
+	_, err = db.CacheGet(ctx, "policy:"+clientIDStr+":openai")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected cache miss after invalidate, got %v", err)
+	}
+}

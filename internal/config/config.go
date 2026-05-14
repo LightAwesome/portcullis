@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -27,6 +28,9 @@ type Config struct {
 	AdminKey  string
 	KeyPepper string
 	MasterKey string
+
+	DefaultMaxRequests   int
+	DefaultWindowSeconds int
 }
 
 func Load() (*Config, error) {
@@ -34,14 +38,16 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		Env:         Environment(getEnvOr("PORTCULLIS_ENV", "development")),
-		Addr:        getEnvOr("PORTCULLIS_ADDR", ":8080"),
-		LogLevel:    getEnvOr("PORTCULLIS_LOG_LEVEL", "info"),
-		DatabaseURL: os.Getenv("PORTCULLIS_DATABASE_URL"),
-		RedisURL:    os.Getenv("PORTCULLIS_REDIS_URL"),
-		AdminKey:    os.Getenv("PORTCULLIS_ADMIN_KEY"),
-		KeyPepper:   os.Getenv("PORTCULLIS_KEY_PEPPER"),
-		MasterKey:   os.Getenv("PORTCULLIS_MASTER_KEY"),
+		Env:                  Environment(getEnvOr("PORTCULLIS_ENV", "development")),
+		Addr:                 getEnvOr("PORTCULLIS_ADDR", ":8080"),
+		LogLevel:             getEnvOr("PORTCULLIS_LOG_LEVEL", "info"),
+		DatabaseURL:          os.Getenv("PORTCULLIS_DATABASE_URL"),
+		RedisURL:             os.Getenv("PORTCULLIS_REDIS_URL"),
+		AdminKey:             os.Getenv("PORTCULLIS_ADMIN_KEY"),
+		KeyPepper:            os.Getenv("PORTCULLIS_KEY_PEPPER"),
+		MasterKey:            os.Getenv("PORTCULLIS_MASTER_KEY"),
+		DefaultMaxRequests:   getEnvIntOr("PORTCULLIS_DEFAULT_MAX_REQUESTS", 60),
+		DefaultWindowSeconds: getEnvIntOr("PORTCULLIS_DEFAULT_WINDOW_SECONDS", 60),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -80,6 +86,14 @@ func (c *Config) validate() error {
 		problems = append(problems,
 			"PORTCULLIS_MASTER_KEY is required and must be at least 32 chars (use: openssl rand -base64 32)")
 	}
+	if c.DefaultMaxRequests <= 0 {
+		problems = append(problems,
+			"PORTCULLIS_DEFAULT_MAX_REQUESTS must be a positive integer")
+	}
+	if c.DefaultWindowSeconds <= 0 {
+		problems = append(problems,
+			"PORTCULLIS_DEFAULT_WINDOW_SECONDS must be a positive integer")
+	}
 
 	if len(problems) > 0 {
 		return errors.New("invalid configuration:\n  - " + strings.Join(problems, "\n  - "))
@@ -101,4 +115,16 @@ func getEnvOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func getEnvIntOr(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }

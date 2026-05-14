@@ -30,9 +30,12 @@ var (
 type Store struct {
 	pool  *pgxpool.Pool
 	redis *redis.Client
+
+	defaultMaxRequests   int
+	defaultWindowSeconds int
 }
 
-func New(ctx context.Context, databaseURL string, redisURL string) (*Store, error) {
+func New(ctx context.Context, databaseURL string, redisURL string, defaultMaxRequests int, defaultWindowSeconds int) (*Store, error) {
 
 	pool, err := newPool(ctx, databaseURL)
 
@@ -45,7 +48,8 @@ func New(ctx context.Context, databaseURL string, redisURL string) (*Store, erro
 		pool.Close()
 		return nil, fmt.Errorf("redis error: %w", err)
 	}
-	s := &Store{pool: pool, redis: rdb}
+	s := &Store{pool: pool, redis: rdb, defaultMaxRequests: defaultMaxRequests,
+		defaultWindowSeconds: defaultWindowSeconds}
 
 	// Preload Lua scripts so the first request doesn't pay the cache-miss
 	// round trip. Best-effort: failure here is non-fatal because the script

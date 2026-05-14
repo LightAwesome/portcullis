@@ -7,14 +7,16 @@ import (
 
 func TestValidate_AcceptsValidConfig(t *testing.T) {
 	c := &Config{
-		Env:         EnvDevelopment,
-		Addr:        ":8080",
-		LogLevel:    "info",
-		DatabaseURL: "postgres://localhost/x",
-		RedisURL:    "redis://localhost",
-		AdminKey:    strings.Repeat("a", 32),
-		KeyPepper:   strings.Repeat("b", 32),
-		MasterKey:   strings.Repeat("c", 32),
+		Env:                  EnvDevelopment,
+		Addr:                 ":8080",
+		LogLevel:             "info",
+		DatabaseURL:          "postgres://localhost/x",
+		RedisURL:             "redis://localhost",
+		AdminKey:             strings.Repeat("a", 32),
+		KeyPepper:            strings.Repeat("b", 32),
+		MasterKey:            strings.Repeat("c", 32),
+		DefaultMaxRequests:   60,
+		DefaultWindowSeconds: 60,
 	}
 	if err := c.validate(); err != nil {
 		t.Fatalf("expected nil, got %v", err)
@@ -66,13 +68,29 @@ func TestValidate_RejectsShortSecrets(t *testing.T) {
 
 func validConfig() *Config {
 	return &Config{
-		Env:         EnvDevelopment,
-		Addr:        ":8080",
-		LogLevel:    "info",
-		DatabaseURL: "postgres://localhost/x",
-		RedisURL:    "redis://localhost",
-		AdminKey:    strings.Repeat("a", 32),
-		KeyPepper:   strings.Repeat("b", 32),
-		MasterKey:   strings.Repeat("c", 32),
+		Env:                  EnvDevelopment,
+		Addr:                 ":8080",
+		LogLevel:             "info",
+		DatabaseURL:          "postgres://localhost/x",
+		RedisURL:             "redis://localhost",
+		AdminKey:             strings.Repeat("a", 32),
+		KeyPepper:            strings.Repeat("b", 32),
+		MasterKey:            strings.Repeat("c", 32),
+		DefaultMaxRequests:   60,
+		DefaultWindowSeconds: 60,
+	}
+}
+
+func TestValidate_RejectsZeroDefaults(t *testing.T) {
+	c := validConfig()
+	c.DefaultMaxRequests = 0
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "PORTCULLIS_DEFAULT_MAX_REQUESTS") {
+		t.Errorf("expected error for zero max_requests, got %v", c.DefaultMaxRequests)
+	}
+
+	c = validConfig()
+	c.DefaultWindowSeconds = -1
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "PORTCULLIS_DEFAULT_WINDOW_SECONDS") {
+		t.Errorf("expected error for negative window_seconds, got %v", err)
 	}
 }

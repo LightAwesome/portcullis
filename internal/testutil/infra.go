@@ -80,7 +80,7 @@ func StartInfra(ctx context.Context) (*Infra, error) {
 		return nil, fmt.Errorf("redis conn string: %w", err)
 	}
 
-	db, err := store.New(ctx, pgURL, rdURL)
+	db, err := store.New(ctx, pgURL, rdURL, 60, 60)
 	if err != nil {
 		_ = pgContainer.Terminate(ctx)
 		_ = rdContainer.Terminate(ctx)

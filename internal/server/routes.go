@@ -31,6 +31,7 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 		r.Get("/ping", handleAdminPing(deps))
 		r.Post("/clients", admin.HandleCreateClient(deps.Authenticator, deps.Store))
 		r.Post("/routes", admin.HandleCreateRoute(deps.Store))
+		r.Post("/policies", admin.HandleCreateRateLimitPolicy(deps.Store))
 	})
 }
 

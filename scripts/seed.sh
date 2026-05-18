@@ -88,6 +88,20 @@ elif [[ "$ROUTE_STATUS" != "201" ]]; then
     exit 1
 fi
 
+# Create a permissive test policy: 1000 req/min so manual testing doesn't
+# hit the limit during ordinary exploration. Tighten via the API when
+# rate-limiting behaviour itself is what's being tested.
+POLICY_RESPONSE=$(curl -sS -X POST "$HOST/admin/policies" \
+    -H "X-Admin-Key: $PORTCULLIS_ADMIN_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"client_id\":\"$(echo "$CLIENT_BODY" | jq -r '.id')\",\"route_prefix\":\"httpbin\",\"max_requests\":1000,\"window_seconds\":60}" \
+    -w "\n%{http_code}")
+
+POLICY_STATUS=$(echo "$POLICY_RESPONSE" | tail -n 1)
+if [[ "$POLICY_STATUS" != "201" ]]; then
+    echo "warning: policy create returned $POLICY_STATUS (continuing — seed is usable without explicit policy)" >&2
+fi
+
 cat <<EOF
 
 seeded successfully.

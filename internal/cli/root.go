@@ -64,6 +64,7 @@ manage configuration via the admin API.`,
 	cmd.AddCommand(
 		raiseCmd(),
 		musterCmd(),
+		siegeCmd(),
 	)
 
 	return cmd

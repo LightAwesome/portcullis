@@ -593,3 +593,199 @@ func TestRateLimit_HeadersPresentOnSuccess(t *testing.T) {
 		}
 	}
 }
+
+// === Policies ===
+
+// registerClientAndGetID is a helper for policy tests: registers a client,
+// returns the client's UUID string (which the policy endpoint requires).
+func registerClientAndGetID(t *testing.T, deps *server.Dependencies, name string) (gatewayKey, clientID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	key, hash, err := deps.Authenticator.GenerateKey()
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	client, err := deps.Store.CreateClient(ctx, name, key.KeyID, hash)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	uuidValue, _ := client.ID.Value()
+	return key.Raw, uuidValue.(string)
+}
+
+func TestCreatePolicy_Success(t *testing.T) {
+	handler, deps := newTestHandlerWithDeps(t)
+	_, clientID := registerClientAndGetID(t, deps, "policy-test")
+
+	body := strings.NewReader(fmt.Sprintf(
+		`{"client_id":%q,"route_prefix":"openai","max_requests":100,"window_seconds":60}`,
+		clientID,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/admin/policies", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		ClientID      string `json:"client_id"`
+		RoutePrefix   string `json:"route_prefix"`
+		MaxRequests   int    `json:"max_requests"`
+		WindowSeconds int    `json:"window_seconds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ClientID != clientID {
+		t.Errorf("client_id: got %q, want %q", resp.ClientID, clientID)
+	}
+	if resp.MaxRequests != 100 || resp.WindowSeconds != 60 {
+		t.Errorf("values: got %d/%d, want 100/60", resp.MaxRequests, resp.WindowSeconds)
+	}
+}
+
+func TestCreatePolicy_UpsertUpdatesExisting(t *testing.T) {
+	handler, deps := newTestHandlerWithDeps(t)
+	_, clientID := registerClientAndGetID(t, deps, "upsert-test")
+
+	bodyTemplate := func(max int) string {
+		return fmt.Sprintf(
+			`{"client_id":%q,"route_prefix":"openai","max_requests":%d,"window_seconds":60}`,
+			clientID, max,
+		)
+	}
+
+	// First create with max=10.
+	req := httptest.NewRequest(http.MethodPost, "/admin/policies",
+		strings.NewReader(bodyTemplate(10)))
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first create: got %d", rec.Code)
+	}
+
+	// Second "create" with max=200 — should upsert.
+	req = httptest.NewRequest(http.MethodPost, "/admin/policies",
+		strings.NewReader(bodyTemplate(200)))
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upsert: got %d", rec.Code)
+	}
+
+	// Verify by reading back from store.
+	policy, err := deps.Store.GetRateLimitPolicy(context.Background(), clientID, "openai")
+	if err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+	if policy.MaxRequests != 200 {
+		t.Errorf("after upsert: got %d, want 200", policy.MaxRequests)
+	}
+}
+
+func TestCreatePolicy_UnknownClient(t *testing.T) {
+	handler, deps := newTestHandlerWithDeps(t)
+
+	body := strings.NewReader(
+		`{"client_id":"00000000-0000-0000-0000-000000000000","route_prefix":"x","max_requests":10,"window_seconds":60}`,
+	)
+	req := httptest.NewRequest(http.MethodPost, "/admin/policies", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status: got %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"unknown_client"`) {
+		t.Errorf("body: got %q", rec.Body.String())
+	}
+}
+
+func TestCreatePolicy_MissingFields(t *testing.T) {
+	handler, deps := newTestHandlerWithDeps(t)
+
+	tests := []struct {
+		name     string
+		body     string
+		wantCode string
+	}{
+		{"no client_id", `{"route_prefix":"x","max_requests":10,"window_seconds":60}`, "missing_client_id"},
+		{"no route_prefix", `{"client_id":"x","max_requests":10,"window_seconds":60}`, "missing_route_prefix"},
+		{"zero max_requests", `{"client_id":"x","route_prefix":"x","max_requests":0,"window_seconds":60}`, "invalid_max_requests"},
+		{"negative window", `{"client_id":"x","route_prefix":"x","max_requests":10,"window_seconds":-1}`, "invalid_window_seconds"},
+		{"bad prefix", `{"client_id":"x","route_prefix":"BAD","max_requests":10,"window_seconds":60}`, "invalid_route_prefix"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/admin/policies",
+				strings.NewReader(tt.body))
+			req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status: got %d, want 400; body: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), `"code":"`+tt.wantCode+`"`) {
+				t.Errorf("body: got %q, want code %q", rec.Body.String(), tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestCreatePolicy_TakesEffectImmediately(t *testing.T) {
+	// End-to-end test: create a policy, then verify the next request
+	// through the proxy uses the new limit (proves cache invalidation).
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	gatewayKey, clientID := registerClientAndGetID(t, deps, "effect-test")
+
+	ctx := context.Background()
+	if _, err := deps.Store.CreateRoute(ctx, "test", upstream.URL, []byte("x")); err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+
+	// First request — uses default (60/60). Triggers cache population.
+	makeRequest := func() int {
+		req := httptest.NewRequest(http.MethodGet, "/proxy/test/x", nil)
+		req.Header.Set("X-Gateway-Key", gatewayKey)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := makeRequest(); code != http.StatusOK {
+		t.Fatalf("warmup: got %d", code)
+	}
+
+	// Now create a policy with limit=1. This should invalidate the cache.
+	body := strings.NewReader(fmt.Sprintf(
+		`{"client_id":%q,"route_prefix":"test","max_requests":1,"window_seconds":60}`,
+		clientID,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/admin/policies", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create policy: got %d", rec.Code)
+	}
+
+	// The next proxy request should see the new limit. The warmup call
+	// already consumed 1 slot under the old default; under the new
+	// limit=1 policy, the next request should be denied.
+	if code := makeRequest(); code != http.StatusTooManyRequests {
+		t.Errorf("after policy: got %d, want 429 (policy should be in effect)", code)
+	}
+}

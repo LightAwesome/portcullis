@@ -6,6 +6,7 @@ import (
 
 	"github.com/LightAwesome/portcullis/internal/admin"
 	"github.com/LightAwesome/portcullis/internal/proxy"
+	"github.com/LightAwesome/portcullis/internal/ratelimit"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -15,13 +16,14 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 	// Authenticated routes. The proxy handler in P1.17 will replace this
 	// placeholder; we mount the middleware here now so we can manually
 	// verify the auth flow before there's a real proxy to test against.
-	mux.Route("/proxy", func(r chi.Router) {
+	mux.Route("/proxy/{prefix}", func(r chi.Router) {
 		r.Use(authMiddleware(deps))
+		r.Use(ratelimit.Middleware(deps.Store))
 		// r.HandleFunc("/*", handleProxyPlaceholder(deps))
-		r.HandleFunc("/{prefix}/*", proxy.Handler(deps.Store))
+		r.HandleFunc("/*", proxy.Handler(deps.Store))
 		// Bare /proxy/{prefix} (no trailing path) also works as the wildcard
 		// matches empty:
-		r.HandleFunc("/{prefix}", proxy.Handler(deps.Store))
+		r.HandleFunc("/", proxy.Handler(deps.Store))
 	})
 
 	mux.Route("/admin", func(r chi.Router) {

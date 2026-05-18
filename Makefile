@@ -1,4 +1,4 @@
-.PHONY: build run test lint clean tidy help up down nuke ps logs dev seed \
+.PHONY: build run test test-pull lint clean tidy help up down nuke ps logs dev seed \
         migrate-up migrate-down migrate-status migrate-create migrate-force
 # O
 # Default goal — runs when you just type `make`.
@@ -16,6 +16,10 @@ run: ## Run the gateway directly (alias for `go run ... raise`).
 
 test: ## Run all tests with race detector.
 	go test -race ./...
+test-pull: 
+	docker pull postgres:16.4-alpine
+	docker pull redis:7.4-alpine
+
 
 lint: ## Run go vet (we'll add golangci-lint in Phase 4).
 	go vet ./...

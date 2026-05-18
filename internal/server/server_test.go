@@ -481,3 +481,115 @@ func TestProxy_ForwardsBodyAndQuery(t *testing.T) {
 		t.Errorf("query: got %q, want 'foo=bar'", gotQuery)
 	}
 }
+
+func TestRateLimit_AllowsUnderLimit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	gatewayKey := registerSeed(t, deps, "rl-test", upstream.URL)
+
+	// Default policy is 60/60. A single request should succeed.
+	req := httptest.NewRequest(http.MethodGet, "/proxy/rl-test/anything", nil)
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	if got := rec.Header().Get("X-Ratelimit-Limit"); got != "60" {
+		t.Errorf("X-RateLimit-Limit: got %q, want '60'", got)
+	}
+	if got := rec.Header().Get("X-Ratelimit-Remaining"); got != "59" {
+		t.Errorf("X-RateLimit-Remaining: got %q, want '59'", got)
+	}
+	if rec.Header().Get("X-Ratelimit-Reset") == "" {
+		t.Error("X-RateLimit-Reset missing")
+	}
+}
+
+func TestRateLimit_DeniesOverLimit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	gatewayKey := registerSeed(t, deps, "rl-test", upstream.URL)
+
+	// Set a tight policy on this client/route so we can hit the limit fast.
+	// First we need the client's ID — fetch it back.
+	ctx := context.Background()
+	parsed, _ := auth.ParseKey(gatewayKey)
+	client, err := deps.Store.GetClientByKeyID(ctx, parsed.KeyID)
+	if err != nil {
+		t.Fatalf("lookup client: %v", err)
+	}
+	clientIDValue, _ := client.ID.Value()
+	clientIDStr := clientIDValue.(string)
+
+	if _, err := deps.Store.CreateRateLimitPolicy(ctx, clientIDStr, "rl-test", 2, 60); err != nil {
+		t.Fatalf("create policy: %v", err)
+	}
+
+	// Two requests should succeed, the third should be denied.
+	for i := 1; i <= 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/proxy/rl-test/x", nil)
+		req.Header.Set("X-Gateway-Key", gatewayKey)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: got %d, want 200; body: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/rl-test/x", nil)
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("third request: got %d, want 429; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"rate_limited"`) {
+		t.Errorf("body: got %q, want code 'rate_limited'", rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("Retry-After missing on 429")
+	}
+	if got := rec.Header().Get("X-Ratelimit-Remaining"); got != "0" {
+		t.Errorf("X-RateLimit-Remaining on 429: got %q, want '0'", got)
+	}
+}
+
+func TestRateLimit_HeadersPresentOnSuccess(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	gatewayKey := registerSeed(t, deps, "rl-test", upstream.URL)
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/rl-test/x", nil)
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d", rec.Code)
+	}
+
+	// All three rate-limit headers must be present on every response.
+	wantHeaders := []string{"X-Ratelimit-Limit", "X-Ratelimit-Remaining", "X-Ratelimit-Reset"}
+	for _, h := range wantHeaders {
+		if rec.Header().Get(h) == "" {
+			t.Errorf("missing header %s", h)
+		}
+	}
+}

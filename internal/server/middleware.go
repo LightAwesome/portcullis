@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/subtle"
 	"errors"
 	"net/http"
@@ -10,26 +9,6 @@ import (
 	"github.com/LightAwesome/portcullis/internal/httpx"
 	"github.com/LightAwesome/portcullis/internal/store"
 )
-
-// contextKey is an unexported type used as the key for context values
-// stored by middleware in this package. Using a custom type prevents
-// collisions with values stored under string keys in other packages.
-type contextKey int
-
-const (
-	clientCtxKey contextKey = iota
-)
-
-// ClientFromContext returns the authenticated client attached to the
-// request's context by authMiddleware. The bool is false if the request
-// hasn't been authenticated (e.g., on /health, /metrics).
-//
-// Handlers that *require* a client should check the bool; their middleware
-// chain should include authMiddleware, but defense in depth is cheap.
-func ClientFromContext(ctx context.Context) (*store.Client, bool) {
-	c, ok := ctx.Value(clientCtxKey).(*store.Client)
-	return c, ok
-}
 
 // authMiddleware returns a Chi middleware that authenticates requests via
 // the X-Gateway-Key header.
@@ -85,7 +64,7 @@ func authMiddleware(deps *Dependencies) func(http.Handler) http.Handler {
 
 			// Attach the authenticated client to the request context for
 			// downstream handlers (proxy, rate limiter, log writer).
-			ctx := context.WithValue(r.Context(), clientCtxKey, client)
+			ctx := auth.WithClient(r.Context(), client)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/LightAwesome/portcullis/internal/auth"
@@ -787,5 +789,144 @@ func TestCreatePolicy_TakesEffectImmediately(t *testing.T) {
 	// limit=1 policy, the next request should be denied.
 	if code := makeRequest(); code != http.StatusTooManyRequests {
 		t.Errorf("after policy: got %d, want 429 (policy should be in effect)", code)
+	}
+}
+
+// TestRateLimit_FullStackConcurrency is the headline correctness test for
+// Phase 2. It exercises the entire authenticated-and-rate-limited proxy
+// chain under concurrent load and asserts exactly max_requests of them
+// succeed.
+//
+// This test demonstrates atomic correctness end-to-end:
+//   - Auth middleware reads the same client from cache across goroutines
+//   - Rate-limit middleware's policy lookup is consistent under contention
+//   - The Lua script's check-and-increment is race-free
+//   - The 429 responses have the right shape (Retry-After, X-RateLimit-*,
+//     themed body with machine code)
+//
+// If this test ever produces "got N, want max_requests" where N drifts
+// between runs, there's a race condition somewhere in the stack. The Lua
+// atomicity test (in store_test.go) covers the Redis layer; this one
+// covers everything above it.
+func TestRateLimit_FullStackConcurrency(t *testing.T) {
+	const (
+		maxRequests   = 100
+		totalRequests = 250
+		concurrency   = 50
+		windowSeconds = 60
+	)
+
+	// Fake upstream — instant 200s.
+	var upstreamHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	ctx := context.Background()
+
+	// Set up the world: client, route pointing at the fake upstream,
+	// tight policy.
+	gatewayKey, clientID := registerClientAndGetID(t, deps, "phase2-stress")
+
+	if _, err := deps.Store.CreateRoute(ctx, "stress", upstream.URL, []byte("test-secret")); err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	if _, err := deps.Store.CreateRateLimitPolicy(ctx, clientID, "stress", maxRequests, windowSeconds); err != nil {
+		t.Fatalf("create policy: %v", err)
+	}
+
+	// Fire totalRequests concurrent requests through the handler chain.
+	var (
+		allowed atomic.Int64
+		denied  atomic.Int64
+		errors  atomic.Int64
+
+		// Capture one 429 response to verify shape.
+		sample429Once sync.Once
+		sample429Body string
+		sample429Hdr  http.Header
+	)
+
+	var wg sync.WaitGroup
+	jobs := make(chan int, totalRequests)
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range jobs {
+				req := httptest.NewRequest(http.MethodGet, "/proxy/stress/x", nil)
+				req.Header.Set("X-Gateway-Key", gatewayKey)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				switch rec.Code {
+				case http.StatusOK:
+					allowed.Add(1)
+				case http.StatusTooManyRequests:
+					denied.Add(1)
+					sample429Once.Do(func() {
+						sample429Body = rec.Body.String()
+						sample429Hdr = rec.Header().Clone()
+					})
+				default:
+					errors.Add(1)
+					t.Errorf("unexpected status %d: body=%s", rec.Code, rec.Body.String())
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < totalRequests; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	// === Assertions ===
+
+	gotAllowed := allowed.Load()
+	gotDenied := denied.Load()
+	gotErrors := errors.Load()
+
+	if gotErrors != 0 {
+		t.Fatalf("unexpected errors: %d (see above)", gotErrors)
+	}
+
+	if gotAllowed != int64(maxRequests) {
+		t.Errorf("allowed: got %d, want %d (drift indicates a race condition)", gotAllowed, maxRequests)
+	}
+	if gotDenied != int64(totalRequests-maxRequests) {
+		t.Errorf("denied: got %d, want %d", gotDenied, totalRequests-maxRequests)
+	}
+
+	// The upstream should have been hit exactly max_requests times
+	// (denied requests never reach the upstream).
+	if got := upstreamHits.Load(); got != int64(maxRequests) {
+		t.Errorf("upstream hits: got %d, want %d (rate-limited requests should NOT reach upstream)",
+			got, maxRequests)
+	}
+
+	// === Verify a single 429 has the right shape ===
+
+	if sample429Body == "" {
+		t.Fatal("no 429 captured — sample assertion impossible")
+	}
+	if !strings.Contains(sample429Body, `"code":"rate_limited"`) {
+		t.Errorf("429 body missing code: %q", sample429Body)
+	}
+	if !strings.Contains(sample429Body, `"error":"the portcullis falls`) {
+		t.Errorf("429 body missing themed message: %q", sample429Body)
+	}
+	if got := sample429Hdr.Get("Retry-After"); got == "" {
+		t.Error("429 missing Retry-After header")
+	}
+	if got := sample429Hdr.Get("X-Ratelimit-Remaining"); got != "0" {
+		t.Errorf("429 X-RateLimit-Remaining: got %q, want '0'", got)
+	}
+	if got := sample429Hdr.Get("X-Ratelimit-Limit"); got != "100" {
+		t.Errorf("429 X-RateLimit-Limit: got %q, want '100'", got)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"log/slog"
 
 	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
@@ -32,6 +33,7 @@ type Dependencies struct {
 	Config        *config.Config
 	Store         *store.Store
 	Authenticator *auth.Authenticator
+	Logger        *slog.Logger
 	// Logger, Metrics, etc. arrive in later phases.
 }
 
@@ -42,5 +44,11 @@ type Dependencies struct {
 func NewServer(deps *Dependencies) http.Handler {
 	mux := chi.NewRouter()
 	addRoutes(mux, deps)
-	return mux
+	var handler http.Handler = mux
+
+	handler = accessLogMiddleware(handler)
+	handler = loggerMiddleware(deps.Logger)(handler)
+	handler = requestIDMiddleware(handler)
+
+	return handler
 }

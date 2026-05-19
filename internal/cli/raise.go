@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -45,6 +46,7 @@ func runServer(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	logger := newLogger(cfg)
 
 	db, err := store.New(ctx, cfg.DatabaseURL, cfg.RedisURL,
 		cfg.DefaultMaxRequests, cfg.DefaultWindowSeconds)
@@ -58,7 +60,7 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("init authenticator: %w", err)
 	}
 
-	deps := &server.Dependencies{Config: cfg, Store: db, Authenticator: auth}
+	deps := &server.Dependencies{Config: cfg, Store: db, Authenticator: auth, Logger: logger}
 	// TODO: construct the HTTP handler.
 	// TODO: start the HTTP server, wait for ctx.Done().
 
@@ -76,6 +78,12 @@ func runServer(ctx context.Context) error {
 		// legitimately take minutes. Per-handler timeouts via context are
 		// the right granularity, not server-level limits.
 	}
+
+	logger.Info("gate raising",
+		"env", cfg.Env,
+		"addr", cfg.Addr,
+		"log_level", cfg.LogLevel,
+	)
 
 	// serverErr receives ListenAndServe's exit reason.
 	// It's a buffered channel of size 1 so the goroutine can deliver its
@@ -112,13 +120,29 @@ func runServer(ctx context.Context) error {
 		// Shutdown returned before all connections drained — either the
 		// 30-second deadline elapsed, or shutdown encountered an error.
 		// Either way, fall through to Close to force-terminate the rest.
-		fmt.Fprintf(os.Stderr, "shutdown deadline exceeded: %v; forcing close\n", err)
+		logger.Error("shutdown deadline exceeded, forcing close", "error", err)
+		// fmt.Fprintf(os.Stderr, "shutdown deadline exceeded: %v; forcing close\n", err)
 		_ = srv.Close()
 	}
+
+	logger.Info("gate has fallen")
 
 	fmt.Println("portcullis: the gate has fallen")
 	//TODO: Shutdown gracefully the http server
 
 	// For now, just block on the context so Ctrl-C does something.
 	return nil
+}
+
+func newLogger(cfg *config.Config) *slog.Logger {
+	level := cfg.SlogLevel()
+
+	var handler slog.Handler
+	if cfg.IsProduction() {
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	}
+
+	return slog.New(handler)
 }

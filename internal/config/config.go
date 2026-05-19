@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -95,11 +96,36 @@ func (c *Config) validate() error {
 			"PORTCULLIS_DEFAULT_WINDOW_SECONDS must be a positive integer")
 	}
 
+	switch strings.ToLower(c.LogLevel) {
+	case "debug", "info", "warn", "error":
+	default:
+		problems = append(problems,
+			fmt.Sprintf("PORTCULLIS_LOG_LEVEL must be debug/info/warn/error, got %q", c.LogLevel))
+	}
+
 	if len(problems) > 0 {
 		return errors.New("invalid configuration:\n  - " + strings.Join(problems, "\n  - "))
 	}
 	return nil
 
+}
+
+// SlogLevel returns the parsed log level. Falls back to Info if the
+// string is unrecognised — validate() should have caught that, but
+// defensive default is cheap.
+func (c *Config) SlogLevel() slog.Level {
+	switch strings.ToLower(c.LogLevel) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // IsProduction returns true when running in the production environment.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,6 +67,7 @@ func TestMain(m *testing.M) {
 		},
 		Store:         infra.Store,
 		Authenticator: authn,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo})),
 	}
 
 	code := m.Run()
@@ -928,5 +930,48 @@ func TestRateLimit_FullStackConcurrency(t *testing.T) {
 	}
 	if got := sample429Hdr.Get("X-Ratelimit-Limit"); got != "100" {
 		t.Errorf("429 X-RateLimit-Limit: got %q, want '100'", got)
+	}
+}
+
+func TestRequestID_GeneratedWhenAbsent(t *testing.T) {
+	handler := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	got := rec.Header().Get("X-Request-ID")
+	if got == "" {
+		t.Fatal("X-Request-ID header missing on response")
+	}
+	if len(got) != 16 {
+		t.Errorf("X-Request-ID length: got %d, want 16; value=%q", len(got), got)
+	}
+}
+
+func TestRequestID_PreservedWhenProvided(t *testing.T) {
+	handler := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Request-ID", "client-trace-42")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Request-ID"); got != "client-trace-42" {
+		t.Errorf("X-Request-ID: got %q, want 'client-trace-42'", got)
+	}
+}
+
+func TestRequestID_RejectsOversizedClientID(t *testing.T) {
+	handler := newTestHandler(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Request-ID", strings.Repeat("x", 200))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	got := rec.Header().Get("X-Request-ID")
+	if len(got) != 16 {
+		t.Errorf("oversized request ID should be replaced; got %d chars", len(got))
 	}
 }

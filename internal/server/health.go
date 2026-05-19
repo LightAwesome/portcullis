@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/LightAwesome/portcullis/internal/httpx"
 	"net/http"
 	"time"
 )
@@ -43,6 +44,7 @@ func handleHealth(deps *Dependencies) http.HandlerFunc {
 			// currently distinguish which failed at the response level. Good
 			// enough for now; we can split into per-dep pings later if the
 			// joint error becomes confusing.
+			httpx.LoggerFromContext(r.Context()).Warn("health check: store ping failed", "error", err)
 			body.Status = "the gate falters"
 			// Mark both as failed since we don't know which is the actual cause.
 			// In Phase 3 we'll improve this by exposing per-dep ping methods.

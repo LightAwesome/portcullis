@@ -11,6 +11,7 @@
 package ratelimit
 
 import (
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -137,6 +138,7 @@ func Middleware(db *store.Store) func(http.Handler) http.Handler {
 
 			policy, err := db.GetRateLimitPolicy(r.Context(), clientIDString, prefix)
 			if err != nil {
+				slog.Default().Warn("rate limit script preload failed", "error", err)
 				fmt.Fprintf(os.Stderr, "RL MIDDLEWARE POLICY: error=%v\n", err)
 				next.ServeHTTP(w, r)
 				return
@@ -152,7 +154,10 @@ func Middleware(db *store.Store) func(http.Handler) http.Handler {
 				int64(policy.WindowSeconds),
 				nowMS,
 			)
+
 			if err != nil {
+				httpx.LoggerFromContext(r.Context()).Warn("rate limit check failed (failing open)",
+					"client_id", clientIDString, "route_prefix", prefix, "error", err)
 				fmt.Fprintf(os.Stderr, "RL MIDDLEWARE RESULT: error=%v\n", err)
 				next.ServeHTTP(w, r)
 				return

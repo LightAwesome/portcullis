@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -57,7 +58,7 @@ func New(ctx context.Context, databaseURL string, redisURL string, defaultMaxReq
 	if err := s.preloadRateLimitScript(ctx); err != nil {
 		// Once we have logging in P3.1, this becomes a logger.Warn. For now,
 		// silent — Run will EVAL on first call and self-heal.
-		_ = err
+		slog.Default().Warn("rate limit script preload failed", "error", err)
 	}
 
 	return s, nil

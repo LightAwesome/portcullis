@@ -12,6 +12,7 @@ import (
 
 	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
+	"github.com/LightAwesome/portcullis/internal/logging"
 	"github.com/LightAwesome/portcullis/internal/server"
 	"github.com/LightAwesome/portcullis/internal/store"
 )
@@ -60,7 +61,13 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("init authenticator: %w", err)
 	}
 
-	deps := &server.Dependencies{Config: cfg, Store: db, Authenticator: auth, Logger: logger}
+	// The log worker drains in the shutdown sequence below, so it
+	// outlives in-flight HTTP requests. Use default Config; the
+	// defaults match PRD §4.4 and don't currently merit env-var tuning.
+	logWorker := logging.NewWorker(db, logger, logging.Config{})
+	logWorker.Start(ctx)
+
+	deps := &server.Dependencies{Config: cfg, Store: db, Authenticator: auth, Logger: logger, LogWorker: logWorker}
 	// TODO: construct the HTTP handler.
 	// TODO: start the HTTP server, wait for ctx.Done().
 

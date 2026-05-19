@@ -16,6 +16,7 @@ import (
 
 	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
+	"github.com/LightAwesome/portcullis/internal/logging"
 	"github.com/LightAwesome/portcullis/internal/server"
 	"github.com/LightAwesome/portcullis/internal/testutil"
 )
@@ -31,8 +32,9 @@ const (
 
 // Package-level state. TestMain initializes; tests reuse.
 var (
-	infra *testutil.Infra
-	deps  *server.Dependencies
+	infra  *testutil.Infra
+	deps   *server.Dependencies
+	worker *logging.Worker
 )
 
 // TestMain starts shared infrastructure once for the entire package.
@@ -57,6 +59,8 @@ func TestMain(m *testing.M) {
 		_ = teardown()
 		os.Exit(1)
 	}
+	worker := logging.NewWorker(infra.Store, slog.New(slog.NewTextHandler(io.Discard, nil)), logging.Config{})
+	worker.Start(context.Background())
 
 	deps = &server.Dependencies{
 		Config: &config.Config{
@@ -68,6 +72,7 @@ func TestMain(m *testing.M) {
 		Store:         infra.Store,
 		Authenticator: authn,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		LogWorker:     worker,
 	}
 
 	code := m.Run()
@@ -78,6 +83,9 @@ func TestMain(m *testing.M) {
 }
 
 func teardown() error {
+	if worker != nil {
+		worker.Stop()
+	}
 	infra.Stop(context.Background())
 	return nil
 }

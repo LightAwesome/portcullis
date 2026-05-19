@@ -21,6 +21,7 @@ import (
 
 	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
+	"github.com/LightAwesome/portcullis/internal/logging"
 	"github.com/LightAwesome/portcullis/internal/store"
 )
 
@@ -34,6 +35,7 @@ type Dependencies struct {
 	Store         *store.Store
 	Authenticator *auth.Authenticator
 	Logger        *slog.Logger
+	LogWorker     *logging.Worker
 	// Logger, Metrics, etc. arrive in later phases.
 }
 

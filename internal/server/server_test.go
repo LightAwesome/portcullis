@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
@@ -32,9 +33,9 @@ const (
 
 // Package-level state. TestMain initializes; tests reuse.
 var (
-	infra  *testutil.Infra
-	deps   *server.Dependencies
-	worker *logging.Worker
+	infra *testutil.Infra
+	deps  *server.Dependencies
+	// worker *logging.Worker
 )
 
 // TestMain starts shared infrastructure once for the entire package.
@@ -59,8 +60,6 @@ func TestMain(m *testing.M) {
 		_ = teardown()
 		os.Exit(1)
 	}
-	worker := logging.NewWorker(infra.Store, slog.New(slog.NewTextHandler(io.Discard, nil)), logging.Config{})
-	worker.Start(context.Background())
 
 	deps = &server.Dependencies{
 		Config: &config.Config{
@@ -72,7 +71,7 @@ func TestMain(m *testing.M) {
 		Store:         infra.Store,
 		Authenticator: authn,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		LogWorker:     worker,
+		// LogWorker:     worker,
 	}
 
 	code := m.Run()
@@ -83,9 +82,9 @@ func TestMain(m *testing.M) {
 }
 
 func teardown() error {
-	if worker != nil {
-		worker.Stop()
-	}
+	// if worker != nil {
+	// 	worker.Stop()
+	// }
 	infra.Stop(context.Background())
 	return nil
 }
@@ -95,7 +94,8 @@ func teardown() error {
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	infra.Reset(t)
-	return server.NewServer(deps)
+	handler, _ := newTestHandlerWithDeps(t)
+	return handler
 }
 
 // newTestHandlerWithDeps is like newTestHandler but also returns deps for
@@ -104,7 +104,25 @@ func newTestHandler(t *testing.T) http.Handler {
 func newTestHandlerWithDeps(t *testing.T) (http.Handler, *server.Dependencies) {
 	t.Helper()
 	infra.Reset(t)
-	return server.NewServer(deps), deps
+
+	testWorker := logging.NewWorker(
+		infra.Store,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logging.Config{
+			BatchSize:    1,
+			BatchTimeout: 10 * time.Millisecond,
+		},
+	)
+	testWorker.Start(context.Background())
+	t.Cleanup(testWorker.Stop)
+	testDeps := *deps
+	testDeps.LogWorker = testWorker
+
+	// if worker != nil {
+	// t.Cleanup(worker.Stop)
+
+	// }
+	return server.NewServer(&testDeps), &testDeps
 }
 
 // === Health ===
@@ -982,4 +1000,182 @@ func TestRequestID_RejectsOversizedClientID(t *testing.T) {
 	if len(got) != 16 {
 		t.Errorf("oversized request ID should be replaced; got %d chars", len(got))
 	}
+}
+
+// === Chronicle ===
+
+func TestChronicle_RecordsSuccessfulRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	gatewayKey := registerSeed(t, deps, "chron-test", upstream.URL)
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/chron-test/some/path", nil)
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rec.Code)
+	}
+
+	// Allow the worker to flush.
+	waitForChronicleEntries(t, deps, 1)
+
+	rows := dumpChronicle(t, deps)
+	if len(rows) != 1 {
+		t.Fatalf("rows: got %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.method != "GET" {
+		t.Errorf("method: got %q", row.method)
+	}
+	if row.path != "/proxy/chron-test/some/path" {
+		t.Errorf("path: got %q", row.path)
+	}
+	if row.statusCode != 200 {
+		t.Errorf("status: got %d", row.statusCode)
+	}
+	if row.rateLimited {
+		t.Errorf("rate_limited: got true, want false")
+	}
+}
+
+func TestChronicle_RecordsRateLimited(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, deps := newTestHandlerWithDeps(t)
+	gatewayKey := registerSeed(t, deps, "chron-rl", upstream.URL)
+
+	// Tight policy.
+	ctx := context.Background()
+	parsed, _ := auth.ParseKey(gatewayKey)
+	client, _ := deps.Store.GetClientByKeyID(ctx, parsed.KeyID)
+	clientIDValue, _ := client.ID.Value()
+	if _, err := deps.Store.CreateRateLimitPolicy(ctx, clientIDValue.(string), "chron-rl", 1, 60); err != nil {
+		t.Fatalf("create policy: %v", err)
+	}
+
+	// First request: allowed.
+	req := httptest.NewRequest(http.MethodGet, "/proxy/chron-rl/x", nil)
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first request: got %d", rec.Code)
+	}
+
+	// Second: denied.
+	req = httptest.NewRequest(http.MethodGet, "/proxy/chron-rl/x", nil)
+	req.Header.Set("X-Gateway-Key", gatewayKey)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request: got %d, want 429", rec.Code)
+	}
+
+	waitForChronicleEntries(t, deps, 2)
+
+	rows := dumpChronicle(t, deps)
+	if len(rows) != 2 {
+		t.Fatalf("rows: got %d, want 2", len(rows))
+	}
+
+	// Find the rate-limited row.
+	var rateLimitedRow *chronRow
+	for i := range rows {
+		if rows[i].rateLimited {
+			rateLimitedRow = &rows[i]
+			break
+		}
+	}
+	if rateLimitedRow == nil {
+		t.Fatal("no rate-limited entry in chronicle")
+	}
+	if rateLimitedRow.statusCode != 429 {
+		t.Errorf("rate-limited status: got %d", rateLimitedRow.statusCode)
+	}
+	if rateLimitedRow.errorDetail != "rate_limited" {
+		t.Errorf("error_detail: got %q, want 'rate_limited'", rateLimitedRow.errorDetail)
+	}
+}
+
+func TestChronicle_DoesNotRecordAdminRequests(t *testing.T) {
+	handler, deps := newTestHandlerWithDeps(t)
+
+	body := strings.NewReader(`{"name":"chronicle-test"}`)
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients", body)
+	req.Header.Set("X-Admin-Key", deps.Config.AdminKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d", rec.Code)
+	}
+
+	// Wait a beat in case the worker were going to record (it shouldn't).
+	time.Sleep(200 * time.Millisecond)
+
+	rows := dumpChronicle(t, deps)
+	if len(rows) != 0 {
+		t.Errorf("admin request should not appear in chronicle; got %d rows", len(rows))
+	}
+}
+
+// === helpers ===
+
+type chronRow struct {
+	method      string
+	path        string
+	statusCode  int
+	rateLimited bool
+	errorDetail string
+	latencyMS   int
+}
+
+func dumpChronicle(t *testing.T, deps *server.Dependencies) []chronRow {
+	t.Helper()
+	const q = `
+		SELECT method, path, status_code, rate_limited, COALESCE(error_detail, ''), latency_ms
+		FROM request_logs
+		ORDER BY requested_at ASC
+	`
+	rows, err := deps.Store.PoolForTesting().Query(context.Background(), q)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	var out []chronRow
+	for rows.Next() {
+		var r chronRow
+		var statusCode *int
+		if err := rows.Scan(&r.method, &r.path, &statusCode, &r.rateLimited, &r.errorDetail, &r.latencyMS); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if statusCode != nil {
+			r.statusCode = *statusCode
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func waitForChronicleEntries(t *testing.T, deps *server.Dependencies, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rows := dumpChronicle(t, deps)
+		if len(rows) >= want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d chronicle entries; got %d", want, len(dumpChronicle(t, deps)))
 }

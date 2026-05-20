@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"github.com/LightAwesome/portcullis/internal/metrics"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -94,10 +95,18 @@ func (w *Worker) Run(ctx context.Context) {
 // Safe to call from many goroutines concurrently.
 func (w *Worker) Submit(entry LogEntry) {
 	select {
+	case <-w.done:
+		w.dropped.Add(1)
+		metrics.RecordLogDropped()
+		return
+	default:
+	}
+	select {
 	case w.ch <- entry:
 		w.enqueued.Add(1)
 	default:
 		w.dropped.Add(1)
+		metrics.RecordLogDropped()
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/LightAwesome/portcullis/internal/httpx"
+	"github.com/LightAwesome/portcullis/internal/metrics"
 	"github.com/LightAwesome/portcullis/internal/store"
 )
 
@@ -100,6 +101,7 @@ func Handler(db *store.Store) http.HandlerFunc {
 		}
 
 		if !route.IsActive {
+			metrics.RecordUpstreamError(prefix, "inactive")
 			httpx.WriteError(w, http.StatusServiceUnavailable,
 				"route_inactive", "the keep beyond this gate is closed")
 			return
@@ -118,11 +120,9 @@ func Handler(db *store.Store) http.HandlerFunc {
 		// per-request Director closure is simpler than parameterising one.
 		// Worth measuring before optimising.
 		rp := &httputil.ReverseProxy{
-			Transport: upstreamTransport,
-			Director:  newDirector(targetURL, prefix, route.UpstreamSecretCiphertext),
-			ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-				handleUpstreamError(rw, err)
-			},
+			Transport:    upstreamTransport,
+			Director:     newDirector(targetURL, prefix, route.UpstreamSecretCiphertext),
+			ErrorHandler: handleUpstreamError,
 		}
 
 		rp.ServeHTTP(w, r)
@@ -131,11 +131,13 @@ func Handler(db *store.Store) http.HandlerFunc {
 
 // handleUpstreamError translates errors from the upstream call into
 // themed responses. Distinguishes timeouts from other failures.
-func handleUpstreamError(w http.ResponseWriter, err error) {
+func handleUpstreamError(w http.ResponseWriter, r *http.Request, err error) {
 	// context.DeadlineExceeded is what we'd see if the upstream hit our
 	// ResponseHeaderTimeout. context.Canceled means the client disconnected.
+	prefix := chi.URLParam(r, "prefix")
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
+		metrics.RecordUpstreamError(prefix, "unreachable")
 		httpx.WriteError(w, http.StatusGatewayTimeout,
 			"upstream_timeout", "the keep beyond the gate is silent")
 	case errors.Is(err, context.Canceled):
@@ -143,10 +145,10 @@ func handleUpstreamError(w http.ResponseWriter, err error) {
 		// We could log this, but for now it's silent.
 		return
 	default:
+		metrics.RecordUpstreamError(prefix, "unreachable")
 		// Most common: connection refused, DNS failure, TLS error.
 		// We don't bother distinguishing further at Phase 1; the message
 		// is generic and the operator can check logs for specifics
-		// (once P3 wires structured logging in).
 		httpx.WriteError(w, http.StatusBadGateway,
 			"upstream_unreachable", "the keep beyond the gate has not answered")
 	}

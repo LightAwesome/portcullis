@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/httpx"
+	"github.com/LightAwesome/portcullis/internal/metrics"
 	"github.com/LightAwesome/portcullis/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -180,6 +181,7 @@ func Middleware(db *store.Store) func(http.Handler) http.Handler {
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 
 				fmt.Fprintf(os.Stderr, "RL MIDDLEWARE RETRY AFTER: %v\n", retryAfterSeconds)
+				metrics.RecordRateLimited(client.Name, prefix)
 
 				httpx.WriteError(w, http.StatusTooManyRequests,
 					"rate_limited", "the portcullis falls - Try again")

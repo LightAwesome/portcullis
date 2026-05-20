@@ -50,6 +50,7 @@ func NewServer(deps *Dependencies) http.Handler {
 
 	handler = accessLogMiddleware(handler)
 	handler = loggerMiddleware(deps.Logger)(handler)
+	handler = metricsMiddleware(handler)
 	handler = requestIDMiddleware(handler)
 
 	return handler

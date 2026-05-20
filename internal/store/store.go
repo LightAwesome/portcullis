@@ -138,3 +138,10 @@ func (s *Store) FlushCacheForTesting(ctx context.Context) error {
 	}
 	return nil
 }
+
+// PoolForTesting returns the underlying pgx pool. Used only by tests
+// that need to verify state independent of higher-level Store methods.
+// Production code should never call this.
+func (s *Store) PoolForTesting() *pgxpool.Pool {
+	return s.pool
+}

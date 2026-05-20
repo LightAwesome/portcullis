@@ -18,6 +18,7 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 	// verify the auth flow before there's a real proxy to test against.
 	mux.Route("/proxy/{prefix}", func(r chi.Router) {
 		r.Use(authMiddleware(deps))
+		r.Use(chronicleMiddleware(deps.LogWorker))
 		r.Use(ratelimit.Middleware(deps.Store))
 		// r.HandleFunc("/*", handleProxyPlaceholder(deps))
 		r.HandleFunc("/*", proxy.Handler(deps.Store))

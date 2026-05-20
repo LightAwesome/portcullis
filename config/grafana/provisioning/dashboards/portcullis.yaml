@@ -1,0 +1,19 @@
+# Dashboard provider configuration.
+#
+# Tells Grafana to load all .json files from /var/lib/grafana/dashboards
+# (which docker-compose mounts from ./config/grafana/dashboards).
+# Updates to dashboard JSON files are picked up on disk; no UI clicks
+# required.
+
+apiVersion: 1
+
+providers:
+  - name: portcullis
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: true
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

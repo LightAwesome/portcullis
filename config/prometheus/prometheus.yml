@@ -1,0 +1,22 @@
+# Prometheus scrape configuration for local development.
+#
+# In production (Phase 4), this file is regenerated with the production
+# gateway hostname. For local dev, we scrape the host machine via the
+# special hostname host.docker.internal — Docker maps this to the host
+# from inside containers.
+#
+# scrape_interval: 5s is aggressive but useful for dev — changes show
+# up in Grafana within seconds. Production typically uses 15-30s.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: portcullis
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - host.docker.internal:8080
+        labels:
+          environment: development

@@ -1,0 +1,17 @@
+# Provision the Prometheus datasource on Grafana startup.
+# Without this, an operator would have to click through the Grafana UI
+# to configure the connection.
+#
+# The url uses the container name 'prometheus' because both Grafana and
+# Prometheus are in the same docker-compose network — they reach each
+# other by service name, not by the published host port.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

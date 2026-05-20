@@ -1,5 +1,5 @@
 .PHONY: build run test test-pull lint clean tidy help up down nuke ps logs dev seed \
-        migrate-up migrate-down migrate-status migrate-create migrate-force
+        migrate-up migrate-down migrate-status migrate-create migrate-force \ logs-prometheus logs-grafana
 # O
 # Default goal — runs when you just type `make`.
 .DEFAULT_GOAL := help
@@ -40,6 +40,11 @@ down: ## Stop dev infrastructure (preserves data).
 nuke: ## Stop dev infrastructure AND DELETE ALL DATA.
 	docker compose down -v
 
+logs-prometheus: ## Tail Prometheus logs.
+	docker compose logs -f prometheus
+
+logs-grafana: ## Tail Grafana logs.
+	docker compose logs -f grafana
 ps: ## Show running containers.
 	docker compose ps
 

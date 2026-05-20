@@ -70,6 +70,9 @@ func authMiddleware(deps *Dependencies) func(http.Handler) http.Handler {
 			// Attach the authenticated client to the request context for
 			// downstream handlers (proxy, rate limiter, log writer).
 			ctx := auth.WithClient(r.Context(), client)
+			if labels := httpx.MetricLabelsFromContext(ctx); labels != nil {
+				labels.Client = client.Name
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

@@ -82,6 +82,9 @@ var upstreamTransport = &http.Transport{
 func Handler(db *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		prefix := chi.URLParam(r, "prefix")
+		if labels := httpx.MetricLabelsFromContext(r.Context()); labels != nil {
+			labels.Route = prefix
+		}
 		if prefix == "" {
 			httpx.WriteError(w, http.StatusBadRequest,
 				"missing_prefix", "no keep specified in the path")
@@ -135,6 +138,9 @@ func handleUpstreamError(w http.ResponseWriter, r *http.Request, err error) {
 	// context.DeadlineExceeded is what we'd see if the upstream hit our
 	// ResponseHeaderTimeout. context.Canceled means the client disconnected.
 	prefix := chi.URLParam(r, "prefix")
+	if labels := httpx.MetricLabelsFromContext(r.Context()); labels != nil {
+		labels.Route = prefix
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		metrics.RecordUpstreamError(prefix, "unreachable")

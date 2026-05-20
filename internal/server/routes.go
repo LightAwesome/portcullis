@@ -8,10 +8,12 @@ import (
 	"github.com/LightAwesome/portcullis/internal/proxy"
 	"github.com/LightAwesome/portcullis/internal/ratelimit"
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func addRoutes(mux chi.Router, deps *Dependencies) {
 	mux.Get("/health", handleHealth(deps))
+	mux.Handle("/metrics", promhttp.Handler())
 
 	// Authenticated routes. The proxy handler in P1.17 will replace this
 	// placeholder; we mount the middleware here now so we can manually

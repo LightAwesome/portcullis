@@ -1,0 +1,39 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Local environment — these contain real secrets
+.env
+.env.local
+*.env
+
+# Editor + OS junk
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# Build outputs
+dist/
+bin/
+*.exe
+portcullis
+
+# Docker / Compose state
+docker-compose.override.yml
+
+# Documentation that the build doesn't need
+docs/
+*.md
+LICENSE
+
+# Test outputs
+coverage.out
+*.test
+
+# Dependency mirrors / caches
+vendor/
+
+# Logs
+*.log

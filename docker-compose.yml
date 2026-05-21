@@ -45,6 +45,41 @@ services:
     networks:
       - portcullis-net
 
+  # The gateway itself. Profile-gated: `docker compose up` (no profile)
+  # brings up only the data services so `make dev` can run on the host;
+  # `docker compose --profile full up` brings up everything in containers,
+  # which is what the VPS will do.
+  gateway:
+    image: portcullis:dev
+    container_name: portcullis-gateway
+    restart: unless-stopped
+    profiles:
+      - full
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORTCULLIS_ENV: ${PORTCULLIS_ENV:-development}
+      PORTCULLIS_ADDR: ":8080"
+      PORTCULLIS_LOG_LEVEL: ${PORTCULLIS_LOG_LEVEL:-info}
+      # Service-name DNS works because we share the portcullis-net bridge.
+      # The credentials match the postgres service's env block.
+      PORTCULLIS_DATABASE_URL: "postgres://portcullis:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/portcullis?sslmode=disable"
+      PORTCULLIS_REDIS_URL: "redis://redis:6379"
+      PORTCULLIS_ADMIN_KEY: ${PORTCULLIS_ADMIN_KEY:?PORTCULLIS_ADMIN_KEY must be set}
+      PORTCULLIS_KEY_PEPPER: ${PORTCULLIS_KEY_PEPPER:?PORTCULLIS_KEY_PEPPER must be set}
+      PORTCULLIS_MASTER_KEY: ${PORTCULLIS_MASTER_KEY:?PORTCULLIS_MASTER_KEY must be set}
+      PORTCULLIS_DEFAULT_MAX_REQUESTS: ${PORTCULLIS_DEFAULT_MAX_REQUESTS:-60}
+      PORTCULLIS_DEFAULT_WINDOW_SECONDS: ${PORTCULLIS_DEFAULT_WINDOW_SECONDS:-60}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - portcullis-net
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: portcullis-prometheus

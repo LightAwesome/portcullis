@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LightAwesome/portcullis/internal/crypto"
 	"github.com/LightAwesome/portcullis/internal/httpx"
 	"github.com/LightAwesome/portcullis/internal/store"
 )
@@ -14,8 +15,9 @@ import (
 // CreateRouteRequest is the JSON body for POST /admin/routes.
 //
 // UpstreamSecret is the real API key for the upstream service (e.g. the
-// real OpenAI key). It's stored as plaintext bytes for Phase 1; AES-256-GCM
-// encryption arrives in P4.2-3.
+// real OpenAI key). It's encrypted with AES-256-GCM using the gateway's
+// master key before being written to Postgres; the plaintext never
+// touches disk and never leaves this handler.
 type CreateRouteRequest struct {
 	Prefix         string `json:"prefix"`
 	TargetBaseURL  string `json:"target_base_url"`
@@ -36,10 +38,13 @@ type CreateRouteResponse struct {
 
 // HandleCreateRoute returns the handler for POST /admin/routes.
 //
-// Validates prefix, target URL, and upstream secret presence; persists the
-// route with the secret stored as plaintext bytes. Phase 4 will encrypt
-// at this layer.
-func HandleCreateRoute(db *store.Store) http.HandlerFunc {
+// Validates prefix, target URL, and upstream secret presence. The
+// upstream secret is encrypted with AES-256-GCM using masterKey before
+// being passed to the store; only ciphertext is persisted.
+//
+// masterKey must be exactly 32 bytes (AES-256). The caller is responsible
+// for capturing it once at startup from config.MasterKeyBytes().
+func HandleCreateRoute(db *store.Store, masterKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req CreateRouteRequest
 		if err := httpx.DecodeJSON(r, &req); err != nil {
@@ -50,9 +55,6 @@ func HandleCreateRoute(db *store.Store) http.HandlerFunc {
 		req.Prefix = strings.TrimSpace(req.Prefix)
 		req.TargetBaseURL = strings.TrimSpace(req.TargetBaseURL)
 
-		// Prefix: required, simple character set, reasonable length.
-		// Restricting to lowercase + digits + hyphen avoids URL-escaping
-		// surprises later.
 		if req.Prefix == "" {
 			httpx.WriteError(w, http.StatusBadRequest,
 				"missing_prefix", "prefix is required")
@@ -69,7 +71,6 @@ func HandleCreateRoute(db *store.Store) http.HandlerFunc {
 			return
 		}
 
-		// Target URL: required, must parse, must be http/https.
 		if req.TargetBaseURL == "" {
 			httpx.WriteError(w, http.StatusBadRequest,
 				"missing_target_url", "target_base_url is required")
@@ -81,17 +82,23 @@ func HandleCreateRoute(db *store.Store) http.HandlerFunc {
 			return
 		}
 
-		// Upstream secret: required, but no further validation. We don't
-		// know what shape the upstream wants — could be a Bearer token,
-		// could be a hex string, could be raw. We just store and forward.
 		if req.UpstreamSecret == "" {
 			httpx.WriteError(w, http.StatusBadRequest,
 				"missing_upstream_secret", "upstream_secret is required")
 			return
 		}
 
-		// TODO: encrypt the secret with AES-256-GCM here.
-		secretCiphertext := []byte(req.UpstreamSecret)
+		// Encrypt before storing. crypto.Encrypt produces nonce ‖ ciphertext ‖ tag,
+		// ready to be stored in upstream_routes.upstream_secret_ciphertext.
+		secretCiphertext, err := crypto.Encrypt([]byte(req.UpstreamSecret), masterKey)
+		if err != nil {
+			// Encrypt fails only on wrong key length or crypto/rand failure.
+			// Both indicate misconfiguration that validate() should have
+			// caught; treat as a server bug, not a client error.
+			httpx.WriteError(w, http.StatusInternalServerError,
+				"encrypt_failed", "the keep's seal could not be cast")
+			return
+		}
 
 		route, err := db.CreateRoute(r.Context(), req.Prefix, req.TargetBaseURL, secretCiphertext)
 		if err != nil {

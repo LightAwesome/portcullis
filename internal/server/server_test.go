@@ -17,6 +17,7 @@ import (
 
 	"github.com/LightAwesome/portcullis/internal/auth"
 	"github.com/LightAwesome/portcullis/internal/config"
+	"github.com/LightAwesome/portcullis/internal/crypto"
 	"github.com/LightAwesome/portcullis/internal/logging"
 	"github.com/LightAwesome/portcullis/internal/server"
 	"github.com/LightAwesome/portcullis/internal/testutil"
@@ -25,7 +26,8 @@ import (
 const (
 	// testPepper is the HMAC pepper used across server tests. Not a real
 	// secret; the bytes are fixed so test failures are reproducible.
-	testPepper = "cd4f9d1494e3705d8f3b2a071684891d8495f531671620bbee5a8c6735bed38e"
+	testPepper    = "cd4f9d1494e3705d8f3b2a071684891d8495f531671620bbee5a8c6735bed38e"
+	testMasterKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 	// testAdminKey is the admin token tests use to authenticate to /admin.
 	testAdminKey = "test-admin-key-must-be-long-enough-to-pass-validation"
@@ -67,6 +69,7 @@ func TestMain(m *testing.M) {
 			AdminKey:             testAdminKey,
 			DefaultMaxRequests:   60,
 			DefaultWindowSeconds: 60,
+			MasterKey:            testMasterKey,
 		},
 		Store:         infra.Store,
 		Authenticator: authn,
@@ -376,7 +379,15 @@ func registerSeed(t *testing.T, deps *server.Dependencies, prefix, upstreamURL s
 	if _, err := deps.Store.CreateClient(ctx, "proxy-test", key.KeyID, hash); err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	if _, err := deps.Store.CreateRoute(ctx, prefix, upstreamURL, []byte("test-secret")); err != nil {
+
+	// Encrypt the upstream secret as production would. Tests insert via
+	// Store.CreateRoute (which deals in ciphertext bytes) rather than the
+	// admin handler, so encryption happens here.
+	ciphertext, err := crypto.Encrypt([]byte("test-secret"), deps.Config.MasterKeyBytes())
+	if err != nil {
+		t.Fatalf("encrypt secret: %v", err)
+	}
+	if _, err := deps.Store.CreateRoute(ctx, prefix, upstreamURL, ciphertext); err != nil {
 		t.Fatalf("create route: %v", err)
 	}
 	return key.Raw
@@ -783,10 +794,10 @@ func TestCreatePolicy_TakesEffectImmediately(t *testing.T) {
 	gatewayKey, clientID := registerClientAndGetID(t, deps, "effect-test")
 
 	ctx := context.Background()
-	if _, err := deps.Store.CreateRoute(ctx, "test", upstream.URL, []byte("x")); err != nil {
+	if _, err := deps.Store.CreateRoute(ctx, "test", upstream.URL,
+		encryptSecret(t, deps, "x")); err != nil {
 		t.Fatalf("create route: %v", err)
 	}
-
 	// First request — uses default (60/60). Triggers cache population.
 	makeRequest := func() int {
 		req := httptest.NewRequest(http.MethodGet, "/proxy/test/x", nil)
@@ -859,9 +870,11 @@ func TestRateLimit_FullStackConcurrency(t *testing.T) {
 	// tight policy.
 	gatewayKey, clientID := registerClientAndGetID(t, deps, "phase2-stress")
 
-	if _, err := deps.Store.CreateRoute(ctx, "stress", upstream.URL, []byte("test-secret")); err != nil {
+	if _, err := deps.Store.CreateRoute(ctx, "stress", upstream.URL,
+		encryptSecret(t, deps, "test-secret")); err != nil {
 		t.Fatalf("create route: %v", err)
 	}
+
 	if _, err := deps.Store.CreateRateLimitPolicy(ctx, clientID, "stress", maxRequests, windowSeconds); err != nil {
 		t.Fatalf("create policy: %v", err)
 	}
@@ -1178,4 +1191,17 @@ func waitForChronicleEntries(t *testing.T, deps *server.Dependencies, want int) 
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d chronicle entries; got %d", want, len(dumpChronicle(t, deps)))
+}
+
+// encryptSecret wraps test-side encryption for routes inserted via
+// Store.CreateRoute. Production-path inserts go through the admin
+// handler (which encrypts itself); tests that bypass the handler need
+// this to produce valid AES-GCM ciphertext for the proxy to decrypt.
+func encryptSecret(t *testing.T, deps *server.Dependencies, plaintext string) []byte {
+	t.Helper()
+	ct, err := crypto.Encrypt([]byte(plaintext), deps.Config.MasterKeyBytes())
+	if err != nil {
+		t.Fatalf("encrypt secret: %v", err)
+	}
+	return ct
 }

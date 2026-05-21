@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LightAwesome/portcullis/internal/crypto"
 	"github.com/LightAwesome/portcullis/internal/httpx"
 	"github.com/LightAwesome/portcullis/internal/metrics"
 	"github.com/LightAwesome/portcullis/internal/store"
@@ -73,13 +74,18 @@ var upstreamTransport = &http.Transport{
 //		}
 //	}
 //
+
 // Handler returns the reverse-proxy handler.
 //
 // The handler reads the route prefix from the URL parameter (set by Chi's
-// route pattern /proxy/{prefix}/*), looks up the upstream config, and
-// forwards. Errors at lookup time produce themed JSON; errors during
-// forwarding produce themed JSON via the configured ErrorHandler.
-func Handler(db *store.Store) http.HandlerFunc {
+// route pattern /proxy/{prefix}/*), looks up the upstream config, decrypts
+// the stored upstream secret with masterKey, and forwards. Decryption is
+// per-request rather than cached — the threat model treats Redis as
+// another at-rest store, so plaintext secrets never leave gateway memory.
+//
+// masterKey must be exactly 32 bytes (AES-256). The caller is responsible
+// for capturing it once at startup from config.MasterKeyBytes().
+func Handler(db *store.Store, masterKey []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		prefix := chi.URLParam(r, "prefix")
 		if labels := httpx.MetricLabelsFromContext(r.Context()); labels != nil {
@@ -117,6 +123,22 @@ func Handler(db *store.Store) http.HandlerFunc {
 			return
 		}
 
+		// Decrypt the upstream secret. Failure here means one of:
+		//   - masterKey was rotated since this route was created (no migration ran)
+		//   - the ciphertext was tampered with (auth-tag verification failed)
+		//   - the row was somehow corrupted in transit
+		// In all cases we cannot forward — return 502, the request never
+		// touches the upstream. Plaintext lives only in the local variable
+		// below and the director closure that captures it; on return it
+		// becomes unreachable and is GC'd.
+		plaintext, err := crypto.Decrypt(route.UpstreamSecretCiphertext, masterKey)
+		if err != nil {
+			metrics.RecordUpstreamError(prefix, "decrypt_failed")
+			httpx.WriteError(w, http.StatusBadGateway,
+				"keep_seal_broken", "the keep's seal could not be broken")
+			return
+		}
+
 		// Construct a ReverseProxy per request. Constructing once and
 		// caching would save microseconds but introduces complications:
 		// route changes would require cache invalidation, and the
@@ -124,7 +146,7 @@ func Handler(db *store.Store) http.HandlerFunc {
 		// Worth measuring before optimising.
 		rp := &httputil.ReverseProxy{
 			Transport:    upstreamTransport,
-			Director:     newDirector(targetURL, prefix, route.UpstreamSecretCiphertext),
+			Director:     newDirector(targetURL, prefix, plaintext),
 			ErrorHandler: handleUpstreamError,
 		}
 

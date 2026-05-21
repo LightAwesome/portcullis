@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/LightAwesome/portcullis/internal/crypto"
 	"log/slog"
 	"os"
 	"strconv"
@@ -83,11 +84,15 @@ func (c *Config) validate() error {
 		problems = append(problems,
 			"PORTCULLIS_KEY_PEPPER is required and must be at least 32 chars (use: openssl rand -hex 32)")
 	}
-	if len(c.MasterKey) < 32 {
+	if c.MasterKey == "" {
 		problems = append(problems,
-			"PORTCULLIS_MASTER_KEY is required and must be at least 32 chars (use: openssl rand -base64 32)")
+			"PORTCULLIS_MASTER_KEY is required (generate with: openssl rand -base64 32)")
+	} else if _, err := crypto.ParseMasterKey(c.MasterKey); err != nil {
+		problems = append(problems,
+			fmt.Sprintf("PORTCULLIS_MASTER_KEY invalid: %v (expected base64 of 32 random bytes; generate with: openssl rand -base64 32)", err))
 	}
 	if c.DefaultMaxRequests <= 0 {
+
 		problems = append(problems,
 			"PORTCULLIS_DEFAULT_MAX_REQUESTS must be a positive integer")
 	}
@@ -153,4 +158,21 @@ func getEnvIntOr(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// MasterKeyBytes returns the raw 32-byte AES-256 key decoded from
+// PORTCULLIS_MASTER_KEY. Panics if called before validate() has
+// confirmed the key is parseable; Load guarantees this.
+//
+// The returned slice is freshly allocated on each call — callers can
+// retain it without worrying about aliasing.
+func (c *Config) MasterKeyBytes() []byte {
+	key, err := crypto.ParseMasterKey(c.MasterKey)
+	if err != nil {
+		// Unreachable: validate() runs ParseMasterKey at startup and
+		// refuses to construct a Config that wouldn't parse. If this
+		// panics, validate is broken.
+		panic(fmt.Sprintf("config: MasterKeyBytes after validate: %v", err))
+	}
+	return key
 }

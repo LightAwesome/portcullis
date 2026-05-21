@@ -46,6 +46,6 @@ func handleAdminPing(deps *Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"admin":"acknowledged"}`)
+		_, _ = fmt.Fprintln(w, `{"admin":"acknowledged"}`)
 	}
 }

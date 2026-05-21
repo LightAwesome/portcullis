@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -186,11 +185,11 @@ func handleUpstreamError(w http.ResponseWriter, r *http.Request, err error) {
 // e.g. trimPrefix("/proxy/httpbin/get", "httpbin", "/proxy") = "/get"
 //
 // Used by the director to compute the upstream-side path from the gateway-side path.
-func trimPrefix(path, prefix, parent string) string {
-	full := parent + "/" + prefix
-	trimmed := strings.TrimPrefix(path, full)
-	if trimmed == "" {
-		return "/"
-	}
-	return trimmed
-}
+// func trimPrefix(path, prefix, parent string) string {
+// 	full := parent + "/" + prefix
+// 	trimmed := strings.TrimPrefix(path, full)
+// 	if trimmed == "" {
+// 		return "/"
+// 	}
+// 	return trimmed
+// }

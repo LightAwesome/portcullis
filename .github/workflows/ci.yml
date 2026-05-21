@@ -2,21 +2,21 @@
 #
 # Continuous integration for Portcullis.
 #
-# Runs on every push to main and every pull request. The job is a single
-# Go test invocation against the standard ubuntu-latest runner, which has
-# Docker preinstalled — testcontainers spawns Postgres and Redis from this
-# Docker daemon, same as your local dev setup.
+# Runs on every push to main and every pull request. The job runs the
+# standard quality gates (gofmt, vet, lint, test) plus a Docker image
+# build to catch Dockerfile regressions.
 #
 # What this catches:
-#   - Compilation errors on a clean machine (no leftover build cache)
-#   - Test failures, including races (-race detector enabled)
+#   - Compilation errors on a clean machine
 #   - Unformatted code (gofmt)
 #   - Common bugs caught by go vet
+#   - Issues flagged by golangci-lint's standard preset
+#   - Test failures, including races (-race)
+#   - Dockerfile that no longer builds
 #
 # What this does NOT catch (yet):
-#   - golangci-lint and friends (P4.6)
-#   - Docker image build (P4.6)
-#   - Cross-platform issues (only Linux runners)
+#   - Pushing the built image to a registry (P4.7 deploy work)
+#   - Cross-platform issues (Linux runners only)
 
 name: CI
 
@@ -25,20 +25,15 @@ on:
     branches: [main]
   pull_request:
 
-# Cancel in-progress runs when a new push lands on the same ref.
-# Saves Actions minutes; you almost never care about old runs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: test
+  ci:
+    name: ci
     runs-on: ubuntu-latest
-
-    # 15-minute ceiling. Testcontainer boot + race-detector test suite
-    # should run in ~5 minutes; if it hits 15 something is stuck.
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -51,8 +46,6 @@ jobs:
           cache: true
 
       - name: Check gofmt
-        # `gofmt -l` prints names of unformatted files. If any are found,
-        # this step fails. The `! grep` trick: empty input -> exit 1.
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -64,8 +57,16 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+
       - name: go test
-        # -race enables the race detector. -count=1 disables the test
-        # cache (which would skip tests that already passed); we want a
-        # cold run in CI to catch issues that depend on test ordering.
         run: go test -race -count=1 -timeout=10m ./...
+
+      - name: Build Docker image
+        # Build but don't push. Catches Dockerfile regressions before
+        # they bite at deploy time. Tagged :ci so it doesn't clobber a
+        # local :dev image if anyone ever inspects the runner.
+        run: docker build -t portcullis:ci .

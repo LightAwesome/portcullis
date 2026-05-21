@@ -1,0 +1,30 @@
+# golangci-lint configuration for Portcullis.
+#
+# Pinned to v2.12.x via the GitHub Actions workflow. To run locally:
+#   golangci-lint run ./...
+#
+# Philosophy: enable the linters that catch real bugs (errcheck,
+# ineffassign, staticcheck, govet, gosimple) and skip the opinionated
+# style nags. For a single-developer project, lint that argues with
+# you is lint that gets disabled — better to start narrow and add
+# linters when there's a specific pain point to address.
+
+version: "2"
+
+linters:
+  # `default: standard` enables the v2 standard preset, which is roughly
+  # the v1 default set: errcheck, govet, ineffassign, staticcheck, unused.
+  # These catch genuine bugs without being chatty about style.
+  default: standard
+
+  # Disable specific linters from the default set if they produce too
+  # many false positives. None disabled today; add here as needed.
+  disable: []
+
+# Per-rule exclusions go here. Empty for now; populate as real false
+# positives surface in CI.
+issues:
+  exclude-rules: []
+
+run:
+  go: "1.26.3"

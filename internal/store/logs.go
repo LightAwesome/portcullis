@@ -50,8 +50,9 @@ func (s *Store) InsertRequestLogs(ctx context.Context, entries []logging.LogEntr
 	}
 
 	results := s.pool.SendBatch(ctx, batch)
-	defer results.Close()
-
+	defer func() {
+		_ = results.Close()
+	}()
 	for i := 0; i < len(entries); i++ {
 		if _, err := results.Exec(); err != nil {
 			// First failure aborts the rest; pgx will discard remaining results.

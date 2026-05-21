@@ -164,7 +164,7 @@ func TestMain(m *testing.M) {
 	for _, k := range os.Environ() {
 		if strings.HasPrefix(k, "PORTCULLIS_") {
 			name := k[:strings.IndexByte(k, '=')]
-			os.Unsetenv(name)
+			_ = os.Unsetenv(name)
 		}
 	}
 	os.Exit(m.Run())

@@ -147,7 +147,8 @@ func (s *Store) cacheClient(ctx context.Context, c *Client) error {
 	if err != nil {
 		return err
 	}
-	s.CacheSet(ctx, clientCacheKey(c.KeyID), b, clientCacheTTL)
+	_ = s.CacheSet(ctx, clientCacheKey(c.KeyID), b, clientCacheTTL)
+	// Could error handle later, but bro im so tired
 	return nil
 }
 

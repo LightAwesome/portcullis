@@ -179,7 +179,7 @@ func showProgress(ctx context.Context, out io.Writer, completed *atomic.Int64, t
 			n := int(completed.Load())
 			renderProgressBar(out, n, total)
 			if n >= total {
-				fmt.Fprintln(out) // newline after final bar
+				_, _ = fmt.Fprintln(out)
 				return
 			}
 		}
@@ -205,25 +205,25 @@ func renderProgressBar(out io.Writer, current, total int) {
 			bar += " "
 		}
 	}
-	fmt.Fprintf(out, "\r[%s] %d/%d", bar, current, total)
+	_, _ = fmt.Fprintf(out, "\r[%s] %d/%d", bar, current, total)
 }
 
 // formatReport renders the result as a human-readable summary.
 func formatReport(out io.Writer, result *SiegeResult) {
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "results:")
-	fmt.Fprintf(out, "  total:      %d\n", result.TotalRequests)
-	fmt.Fprintf(out, "  duration:   %s\n", result.Duration.Round(time.Millisecond))
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "results:")
+	_, _ = fmt.Fprintf(out, "  total:      %d\n", result.TotalRequests)
+	_, _ = fmt.Fprintf(out, "  duration:   %s\n", result.Duration.Round(time.Millisecond))
 
 	rps := float64(result.TotalRequests) / result.Duration.Seconds()
-	fmt.Fprintf(out, "  rps:        %.1f\n", rps)
+	_, _ = fmt.Fprintf(out, "  rps:        %.1f\n", rps)
 
 	if result.Errors > 0 {
-		fmt.Fprintf(out, "  errors:     %d\n", result.Errors)
+		_, _ = fmt.Fprintf(out, "  errors:     %d\n", result.Errors)
 	}
 
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "status codes:")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "status codes:")
 	// Sort status codes for stable output.
 	codes := make([]int, 0, len(result.StatusCounts))
 	for c := range result.StatusCounts {
@@ -233,16 +233,16 @@ func formatReport(out io.Writer, result *SiegeResult) {
 	for _, code := range codes {
 		count := result.StatusCounts[code]
 		pct := 100.0 * float64(count) / float64(result.TotalRequests)
-		fmt.Fprintf(out, "  %d  %-20s %5d  (%.1f%%)\n", code, http.StatusText(code), count, pct)
+		_, _ = fmt.Fprintf(out, "  %d  %-20s %5d  (%.1f%%)\n", code, http.StatusText(code), count, pct)
 	}
 
 	if len(result.Latencies) > 0 {
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "latency:")
-		fmt.Fprintf(out, "  p50:  %s\n", percentile(result.Latencies, 0.50).Round(time.Millisecond))
-		fmt.Fprintf(out, "  p95:  %s\n", percentile(result.Latencies, 0.95).Round(time.Millisecond))
-		fmt.Fprintf(out, "  p99:  %s\n", percentile(result.Latencies, 0.99).Round(time.Millisecond))
-		fmt.Fprintf(out, "  max:  %s\n", result.Latencies[len(result.Latencies)-1].Round(time.Millisecond))
+		_, _ = fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out, "latency:")
+		_, _ = fmt.Fprintf(out, "  p50:  %s\n", percentile(result.Latencies, 0.50).Round(time.Millisecond))
+		_, _ = fmt.Fprintf(out, "  p95:  %s\n", percentile(result.Latencies, 0.95).Round(time.Millisecond))
+		_, _ = fmt.Fprintf(out, "  p99:  %s\n", percentile(result.Latencies, 0.99).Round(time.Millisecond))
+		_, _ = fmt.Fprintf(out, "  max:  %s\n", result.Latencies[len(result.Latencies)-1].Round(time.Millisecond))
 	}
 }
 

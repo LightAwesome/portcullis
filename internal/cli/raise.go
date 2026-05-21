@@ -61,18 +61,12 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("init authenticator: %w", err)
 	}
 
-	// The log worker drains in the shutdown sequence below, so it
-	// outlives in-flight HTTP requests. Use default Config; the
-	// defaults match PRD §4.4 and don't currently merit env-var tuning.
 	logWorker := logging.NewWorker(db, logger, logging.Config{})
 	logWorker.Start(ctx)
 
 	deps := &server.Dependencies{Config: cfg, Store: db, Authenticator: auth, Logger: logger, LogWorker: logWorker}
-	// TODO: construct the HTTP handler.
-	// TODO: start the HTTP server, wait for ctx.Done().
 
 	handler := server.NewServer(deps)
-	//TODO: actually listen to and serve requests
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
@@ -80,10 +74,6 @@ func runServer(ctx context.Context) error {
 
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		// ReadTimeout and WriteTimeout intentionally unset:
-		// the gateway proxies streaming responses (e.g. LLM SSE) which can
-		// legitimately take minutes. Per-handler timeouts via context are
-		// the right granularity, not server-level limits.
 	}
 
 	logger.Info("gate raising",
@@ -131,13 +121,20 @@ func runServer(ctx context.Context) error {
 		// fmt.Fprintf(os.Stderr, "shutdown deadline exceeded: %v; forcing close\n", err)
 		_ = srv.Close()
 	}
+	stats := logWorker.Stats()
+	logger.Info("draining log worker",
+		"enqueued", stats.Enqueued,
+		"dropped", stats.Dropped,
+	)
+	logWorker.Stop()
+	logger.Info("log worker drained",
+		"enqueued", logWorker.Stats().Enqueued,
+	)
 
 	logger.Info("gate has fallen")
 
 	fmt.Println("portcullis: the gate has fallen")
-	//TODO: Shutdown gracefully the http server
 
-	// For now, just block on the context so Ctrl-C does something.
 	return nil
 }
 

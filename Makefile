@@ -58,13 +58,13 @@ logs: ## Tail container logs (Ctrl-C to exit).
 MIGRATE = migrate -path migrations -database "$$PORTCULLIS_DATABASE_URL"
 
 migrate-up: ## Apply all pending migrations.
-	@. ./env && $(MIGRATE) up
+	@. ./.env && $(MIGRATE) up
 
 migrate-down: ## Roll back the most recent migration.
-	@. ./env && $(MIGRATE) down 1
+	@. ./.env && $(MIGRATE) down 1
 
 migrate-status: ## Show current migration version.
-	@. ./env && $(MIGRATE) version
+	@. ./.env && $(MIGRATE) version
 
 migrate-create: ## Create a new migration. Usage: make migrate-create name=add_users
 	@if [ -z "$(name)" ]; then echo "Usage: make migrate-create name=<snake_case_name>"; exit 1; fi
@@ -72,7 +72,7 @@ migrate-create: ## Create a new migration. Usage: make migrate-create name=add_u
 
 migrate-force: ## Force schema_migrations to a version. Usage: make migrate-force v=2
 	@if [ -z "$(v)" ]; then echo "Usage: make migrate-force v=<integer>"; exit 1; fi
-	@. ./env && $(MIGRATE) force $(v)
+	@. ./.env && $(MIGRATE) force $(v)
 
 seed: ## Seed the running gateway with a test client and route.
 	@./scripts/seed.sh

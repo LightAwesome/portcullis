@@ -17,7 +17,7 @@ import (
 // request hits Get to look up a long-lived breaker; creation only
 // happens once per new route.
 type Registry struct {
-	breakers sync.Map           // prefix string → *Breaker
+	breakers sync.Map // prefix string → *Breaker
 	configFn func(name string) Config
 }
 

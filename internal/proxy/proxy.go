@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LightAwesome/portcullis/internal/breaker"
 	"github.com/LightAwesome/portcullis/internal/crypto"
 	"github.com/LightAwesome/portcullis/internal/httpx"
 	"github.com/LightAwesome/portcullis/internal/metrics"
@@ -84,7 +85,7 @@ var upstreamTransport = &http.Transport{
 //
 // masterKey must be exactly 32 bytes (AES-256). The caller is responsible
 // for capturing it once at startup from config.MasterKeyBytes().
-func Handler(db *store.Store, masterKey []byte) http.HandlerFunc {
+func Handler(db *store.Store, masterKey []byte, breakers *breaker.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		prefix := chi.URLParam(r, "prefix")
 		if labels := httpx.MetricLabelsFromContext(r.Context()); labels != nil {
@@ -115,8 +116,23 @@ func Handler(db *store.Store, masterKey []byte) http.HandlerFunc {
 			return
 		}
 
+		// Circuit breaker check. If the breaker for this route is open
+		// (or half-open with a probe already in flight), short-circuit
+		// without touching the upstream. The breaker is the protective
+		// layer between "this route is registered" and "we're going to
+		// attempt the upstream."
+		br := breakers.Get(prefix)
+		if !br.Allow() {
+			metrics.RecordCircuitShortCircuit(prefix)
+			httpx.WriteError(w, http.StatusServiceUnavailable,
+				"circuit_open", "the gate has barred this keep")
+			return
+		}
+
 		targetURL, err := url.Parse(route.TargetBaseURL)
 		if err != nil {
+
+			br.ReportSuccess()
 			httpx.WriteError(w, http.StatusInternalServerError,
 				"invalid_target_url", "the keep address is malformed")
 			return
@@ -132,6 +148,7 @@ func Handler(db *store.Store, masterKey []byte) http.HandlerFunc {
 		// becomes unreachable and is GC'd.
 		plaintext, err := crypto.Decrypt(route.UpstreamSecretCiphertext, masterKey)
 		if err != nil {
+			br.ReportSuccess()
 			metrics.RecordUpstreamError(prefix, "decrypt_failed")
 			httpx.WriteError(w, http.StatusBadGateway,
 				"keep_seal_broken", "the keep's seal could not be broken")
@@ -144,9 +161,25 @@ func Handler(db *store.Store, masterKey []byte) http.HandlerFunc {
 		// per-request Director closure is simpler than parameterising one.
 		// Worth measuring before optimising.
 		rp := &httputil.ReverseProxy{
-			Transport:    upstreamTransport,
-			Director:     newDirector(targetURL, prefix, plaintext),
-			ErrorHandler: handleUpstreamError,
+			Transport: upstreamTransport,
+			Director:  newDirector(targetURL, prefix, plaintext),
+			ModifyResponse: func(resp *http.Response) error {
+				if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+					br.ReportFailure()
+				} else {
+					br.ReportSuccess()
+				}
+				return nil
+			},
+
+			// ErrorHandler runs when the upstream can't be reached
+			// (connection refused, DNS failure, timeout, TLS error).
+			// This is the "report failure" path when there's no
+			// upstream response at all.
+			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				br.ReportFailure()
+				handleUpstreamError(w, r, err)
+			},
 		}
 
 		rp.ServeHTTP(w, r)

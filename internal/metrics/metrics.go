@@ -10,6 +10,7 @@
 package metrics
 
 import (
+	"github.com/LightAwesome/portcullis/internal/breaker"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -110,4 +111,60 @@ func orUnknown(s string) string {
 		return "unknown"
 	}
 	return s
+}
+
+// CircuitBreakerStateGauge tracks the current state of each route's
+// circuit breaker. Value: 0=closed, 1=half-open, 2=open.
+//
+// Higher value = worse state, matching the natural reading of a
+// Grafana gauge ("alert when state > 0" catches half-open or open).
+var circuitBreakerStateGauge = promauto.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "portcullis_circuit_breaker_state",
+		Help: "Current state of each route's circuit breaker (0=closed, 1=half-open, 2=open).",
+	},
+	[]string{"route"},
+)
+
+// circuitBreakerStateChangesTotal counts state transitions per route.
+// Labels include source and destination state so dashboards can show
+// "how many times has openai's breaker gone closed→open?"
+var circuitBreakerStateChangesTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "portcullis_circuit_breaker_state_changes_total",
+		Help: "Number of state transitions per route circuit breaker.",
+	},
+	[]string{"route", "from", "to"},
+)
+
+// circuitBreakerShortCircuitsTotal counts requests rejected because
+// the breaker was open at request time.
+var circuitBreakerShortCircuitsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "portcullis_circuit_breaker_short_circuits_total",
+		Help: "Number of requests short-circuited because the breaker was open.",
+	},
+	[]string{"route"},
+)
+
+// RecordCircuitShortCircuit increments the short-circuit counter for
+// the given route. Called from the proxy handler when the breaker's
+// Allow() returns false.
+func RecordCircuitShortCircuit(route string) {
+	circuitBreakerShortCircuitsTotal.WithLabelValues(route).Inc()
+}
+
+// RecordCircuitStateChange returns a callback suitable for the
+// breaker's OnStateChange hook. The returned function updates both
+// the gauge (current state) and the transitions counter (from→to).
+//
+// The returned closure captures the route name; the breaker invokes
+// it on every state transition.
+func RecordCircuitStateChange(route string) func(from, to breaker.State) {
+	return func(from, to breaker.State) {
+		circuitBreakerStateChangesTotal.WithLabelValues(
+			route, from.String(), to.String(),
+		).Inc()
+		circuitBreakerStateGauge.WithLabelValues(route).Set(float64(to))
+	}
 }

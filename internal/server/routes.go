@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/LightAwesome/portcullis/internal/admin"
+	"github.com/LightAwesome/portcullis/internal/breaker"
+	"github.com/LightAwesome/portcullis/internal/metrics"
 	"github.com/LightAwesome/portcullis/internal/proxy"
 	"github.com/LightAwesome/portcullis/internal/ratelimit"
 	"github.com/go-chi/chi/v5"
@@ -26,7 +28,20 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 		r.Use(chronicleMiddleware(deps.LogWorker))
 		r.Use(ratelimit.Middleware(deps.Store))
 
-		proxyHandler := proxy.Handler(deps.Store, masterKey)
+		// Construct a breaker registry. The configFn returns the Config for
+		// a newly-discovered route. Defaults today; per-route configuration
+		// is documented as future work (PRD Phase 6 polish).
+		breakerRegistry := breaker.NewRegistry(func(name string) breaker.Config {
+			return breaker.Config{
+				Name:          name,
+				OnStateChange: metrics.RecordCircuitStateChange(name),
+				// Other fields use NewBreaker's defaults: threshold=5,
+				// window=60s, cooldown=30s, realClock.
+			}
+		})
+
+		// ...
+		proxyHandler := proxy.Handler(deps.Store, masterKey, breakerRegistry)
 		r.HandleFunc("/*", proxyHandler)
 		// Bare /proxy/{prefix} (no trailing path) — the wildcard matches empty.
 		r.HandleFunc("/", proxyHandler)

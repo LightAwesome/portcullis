@@ -33,6 +33,9 @@ type Config struct {
 
 	DefaultMaxRequests   int
 	DefaultWindowSeconds int
+
+	DashboardToken string
+	AllowedOrigins []string
 }
 
 func Load() (*Config, error) {
@@ -50,6 +53,8 @@ func Load() (*Config, error) {
 		MasterKey:            os.Getenv("PORTCULLIS_MASTER_KEY"),
 		DefaultMaxRequests:   getEnvIntOr("PORTCULLIS_DEFAULT_MAX_REQUESTS", 60),
 		DefaultWindowSeconds: getEnvIntOr("PORTCULLIS_DEFAULT_WINDOW_SECONDS", 60),
+		DashboardToken:       os.Getenv("PORTCULLIS_DASHBOARD_TOKEN"),
+		AllowedOrigins:       splitCSV(os.Getenv("PORTCULLIS_ALLOWED_ORIGINS")),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -175,4 +180,18 @@ func (c *Config) MasterKeyBytes() []byte {
 		panic(fmt.Sprintf("config: MasterKeyBytes after validate: %v", err))
 	}
 	return key
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }

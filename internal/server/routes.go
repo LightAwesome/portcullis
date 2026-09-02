@@ -6,6 +6,7 @@ import (
 
 	"github.com/LightAwesome/portcullis/internal/admin"
 	"github.com/LightAwesome/portcullis/internal/breaker"
+	"github.com/LightAwesome/portcullis/internal/dashboard"
 	"github.com/LightAwesome/portcullis/internal/metrics"
 	"github.com/LightAwesome/portcullis/internal/proxy"
 	"github.com/LightAwesome/portcullis/internal/ratelimit"
@@ -14,6 +15,7 @@ import (
 )
 
 func addRoutes(mux chi.Router, deps *Dependencies) {
+	mux.Use(corsMiddleware(deps.Config.AllowedOrigins))
 	mux.Get("/health", handleHealth(deps))
 	mux.Handle("/metrics", promhttp.Handler())
 
@@ -22,7 +24,14 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 	// share the same 32-byte slice, and the admin route creator sees
 	// bytes from the same source.
 	masterKey := deps.Config.MasterKeyBytes()
-
+	breakerRegistry := breaker.NewRegistry(func(name string) breaker.Config {
+		return breaker.Config{
+			Name:          name,
+			OnStateChange: metrics.RecordCircuitStateChange(name),
+			// Other fields use NewBreaker's defaults: threshold=5,
+			// window=60s, cooldown=30s, realClock.
+		}
+	})
 	mux.Route("/proxy/{prefix}", func(r chi.Router) {
 		r.Use(authMiddleware(deps))
 		r.Use(chronicleMiddleware(deps.LogWorker))
@@ -31,14 +40,6 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 		// Construct a breaker registry. The configFn returns the Config for
 		// a newly-discovered route. Defaults today; per-route configuration
 		// is documented as future work (PRD Phase 6 polish).
-		breakerRegistry := breaker.NewRegistry(func(name string) breaker.Config {
-			return breaker.Config{
-				Name:          name,
-				OnStateChange: metrics.RecordCircuitStateChange(name),
-				// Other fields use NewBreaker's defaults: threshold=5,
-				// window=60s, cooldown=30s, realClock.
-			}
-		})
 
 		// ...
 		proxyHandler := proxy.Handler(deps.Store, masterKey, breakerRegistry)
@@ -54,6 +55,7 @@ func addRoutes(mux chi.Router, deps *Dependencies) {
 		r.Post("/routes", admin.HandleCreateRoute(deps.Store, masterKey))
 		r.Post("/policies", admin.HandleCreateRateLimitPolicy(deps.Store))
 	})
+	dashboard.Register(mux, deps.Config.DashboardToken, deps.Store, breakerRegistry)
 }
 
 // TODO: Could abstract this later to its own file but seems unnecessary right now.
